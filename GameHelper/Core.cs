@@ -155,6 +155,8 @@ namespace GameHelper
         /// </summary>
         internal static void Dispose()
         {
+            // Give plugins access to the still-live state for their normal cleanup/undo.
+            Plugin.PManager.Shutdown();
             Process.Close(false);
         }
 

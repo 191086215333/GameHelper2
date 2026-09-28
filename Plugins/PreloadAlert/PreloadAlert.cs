@@ -1,4 +1,4 @@
-﻿// <copyright file="PreloadAlert.cs" company="PlaceholderCompany">
+// <copyright file="PreloadAlert.cs" company="PlaceholderCompany">
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
@@ -185,7 +185,7 @@ namespace PreloadAlert
                 {
                     for (var i = 0; i < this.preloadFoundList.Count; i++)
                     {
-                        ImGui.TextColored(this.preloadFoundList[i].Color, this.preloadFoundList[i].DisplayName);
+                        ImGui.TextColored(this.preloadFoundList[i].Color, GameHelper.Localization.GameText.Display(this.preloadFoundList[i].DisplayName));
                     }
                 }
             }

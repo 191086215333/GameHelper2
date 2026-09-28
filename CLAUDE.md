@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-GameHelper2 is a Windows x64 .NET 10 overlay for Path of Exile 2. It attaches to the running game process, reads game state out of its memory, and renders an ImGui overlay (via `ClickableTransparentOverlay`). Functionality is delivered through dynamically-loaded plugins. There are no automated tests in this repo.
+GameHelper2 is a Windows x64 .NET 10 overlay for Path of Exile 2. It attaches to the running game process, reads game state out of its memory, and renders an ImGui overlay (via `ClickableTransparentOverlay`). Functionality is delivered through dynamically-loaded plugins. Offline console tests and rendering checks are documented in `Tests/README.md`; they do not validate live game behavior. The experimental PortalAccess plugin defaults to read-only observation and uses a separate writable handle only when its recovery switch is enabled.
 
 ## Build & run
 
