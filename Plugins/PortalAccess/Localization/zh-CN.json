@@ -25,9 +25,10 @@
   "table.valid": "通过",
   "table.invalid": "已跳过",
   "status.scan": "扫描实体：活动 {0}、休眠 {1}；保留的传送门 {2}",
-  "status.scan_incomplete": "采样已达到时间或读取上限，或区域发生变化；部分传送门可能未被读取。",
+  "status.scan_incomplete": "扫描尚未完成，会分批继续；已找到的门会保留，切图后重置进度。可导出诊断查看停止原因。",
   "table.hidden": "对玩家隐藏",
   "table.quest": "任务条件",
   "table.item": "物品条件",
-  "status.unsupported": "无法识别客户端结构，已阻止全部恢复写入"
+  "status.unsupported": "无法识别客户端结构，已阻止全部恢复写入",
+  "status.scanning": "正在分批扫描区域，下次会从上次的位置继续"
 }

@@ -28,6 +28,16 @@ namespace PortalAccess
         private long nextSample;
         private string status = "waiting";
         private readonly Dictionary<PortalIdentity, PortalCandidate> known = new();
+        private readonly PortalScanCursor awakeCursor = new();
+        private readonly PortalScanCursor sleepingCursor = new();
+        private bool sleepingFirst;
+        private int scanPass;
+        private int awakeSize;
+        private int sleepingSize;
+        private int scanReads;
+        private string scanStopReason = "none";
+        private string awakeStopReason = "none";
+        private string sleepingStopReason = "none";
         private int awakeVisited;
         private int sleepingVisited;
         private bool scanComplete = true;
@@ -88,7 +98,7 @@ namespace PortalAccess
                 this.SaveDiagnostics();
             ImGui.TextWrapped(this.PluginText.T("settings.export_path", "Saved to Plugins/PortalAccess/config/portal-diagnostics.json every 10 seconds. Flag offsets are identified from the client's debug method; unrecognized layouts show no values. These flags cannot prove that a portal is usable."));
             ImGui.TextWrapped(this.PluginText.F("status.scan", "Scanned entities: awake {0}, sleeping {1}; retained portals {2}", this.awakeVisited, this.sleepingVisited, this.known.Count));
-            if (!this.scanComplete) ImGui.TextWrapped(this.PluginText.T("status.scan_incomplete", "The sample ended at its time/read limit or the area changed. Some portals may be missing."));
+            if (!this.scanComplete) ImGui.TextWrapped(this.PluginText.T("status.scan_incomplete", "Discovery is continuing in batches. Found portals are retained; area changes reset progress. Export diagnostics to see the stopping reason."));
             if (ImGui.BeginTable("PortalStates", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new System.Numerics.Vector2(0, 180)))
             {
                 ImGui.TableSetupColumn(this.PluginText.T("table.portal", "Portal ID"));
@@ -120,6 +130,7 @@ namespace PortalAccess
             "observe" => this.PluginText.T("status.observe", "Read-only diagnostics; recovery is switched off"),
             "active" => this.PluginText.T("status.active", "Recovery enabled for the verified client layout"),
             "unsupported" => this.PluginText.T("status.unsupported", "Client layout not recognized; all recovery writes are blocked"),
+            "scanning" => this.PluginText.T("status.scanning", "Scanning the area in batches; continuing from the previous position"),
             "empty" => this.PluginText.T("status.empty", "No portal entities found nearby"),
             "failed" => this.PluginText.T("status.failed", "Some checks were incomplete or rejected; unverified portals were skipped"),
             "error" => this.PluginText.T("status.exception", "Sampling stopped after an error; see Error.log"),
@@ -179,11 +190,13 @@ namespace PortalAccess
             {
                 this.ledger.Clear();
                 this.known.Clear();
+                this.awakeCursor.Reset();
+                this.sleepingCursor.Reset();
                 this.processSession = this.memory.Session;
             }
             this.Collect();
-            var errors = this.observations.Count(x => !x.Valid) + (this.scanComplete ? 0 : 1);
-            this.status = errors > 0 ? "failed" : this.observations.Count == 0 ? "empty" : "observe";
+            var errors = this.observations.Count(x => !x.Valid);
+            this.status = errors > 0 ? "failed" : this.observations.Count == 0 ? (this.scanComplete ? "empty" : "scanning") : "observe";
             if (this.Settings.RestoreInteraction)
             {
                 if (!this.memory.RecoveryLayoutVerified) this.status = "unsupported";
@@ -255,40 +268,69 @@ namespace PortalAccess
             if (!budget.Read<AreaInstanceOffsets>(instance.Address.ToInt64(), out var data) ||
                 data.CurrentAreaHash.ToString("X") != instance.AreaHash || data.PlayerInfo.LocalPlayerPtr != instance.Player.Address)
             { this.scanComplete = false; return; }
-            var scanner = new PortalScanner(budget, () => budget.CanContinue);
-            var awake = scanner.Scan(data.Entities.AwakeEntities, "awake-native");
-            var sleeping = scanner.Scan(data.Entities.SleepingEntities, "sleeping-native");
-            this.awakeVisited = awake.Visited;
-            this.sleepingVisited = sleeping.Visited;
-            this.scanComplete = awake.Complete && sleeping.Complete;
-            var candidates = awake.Portals.Concat(sleeping.Portals).GroupBy(x => x.Identity).Select(x => x.First()).ToList();
-            var found = candidates.Select(x => x.Identity).ToHashSet();
+            this.awakeSize = data.Entities.AwakeEntities.Size;
+            this.sleepingSize = data.Entities.SleepingEntities.Size;
+            // Reserve only part of the shared budget for retained gates so discovery
+            // still advances. Found candidates survive even if display/flag reads time out.
+            var retainedBudget = new ScanBudget(budget, () => budget.CanContinue, maxReads: 1200, milliseconds: 5);
+            var retainedScanner = new PortalScanner(retainedBudget, () => retainedBudget.CanContinue);
             foreach (var identity in this.known.Keys.ToArray())
             {
-                if (!budget.CanContinue) break;
-                if (found.Contains(identity)) continue;
-                if (scanner.TryReadCandidate(identity.Entity, identity.Id, "retained", out var candidate) && candidate!.Identity == identity)
-                    candidates.Add(candidate);
-                else this.known.Remove(identity);
+                if (!retainedBudget.CanContinue) break;
+                if (retainedScanner.TryReadCandidate(identity.Entity, identity.Id, "retained", out var candidate) && candidate!.Identity == identity)
+                    this.Observe(candidate, retainedBudget);
+                else if (retainedBudget.CanContinue) this.known.Remove(identity);
             }
-            foreach (var candidate in candidates)
+
+            if (this.awakeCursor.Complete && this.sleepingCursor.Complete)
             {
-                if (!budget.CanContinue) break;
-                var identity = candidate.Identity;
-                var valid = budget.Read<GameOffsets.Objects.Components.ComponentHeader>(identity.Targetable, out var header) && header.EntityPtr.ToInt64() == identity.Entity;
-                if (valid && this.known.Count < 128) this.known[identity] = candidate;
-                PortalFlagReader.Flags? flags = null;
-                if (valid) PortalFlagReader.TryRead(budget, identity, this.memory.ImageStart, this.memory.ImageSize, out flags);
-                var raw = budget.ReadBytes(identity.Targetable, 0x80, out var bytes) ? Convert.ToHexString(bytes) : string.Empty;
-                this.observations.Add(new(identity, candidate.Path, valid, flags, candidate.Source, candidate.EntityState, candidate.Components, raw));
+                this.awakeCursor.Reset(); this.sleepingCursor.Reset(); this.scanPass++;
             }
-            this.scanComplete &= budget.CanContinue;
+            var scanner = new PortalScanner(budget, () => budget.CanContinue);
+            ScanResult awake, sleeping;
+            if (this.sleepingFirst)
+            {
+                sleeping = scanner.ScanPage(data.Entities.SleepingEntities, "sleeping-native", this.sleepingCursor);
+                awake = scanner.ScanPage(data.Entities.AwakeEntities, "awake-native", this.awakeCursor);
+            }
+            else
+            {
+                awake = scanner.ScanPage(data.Entities.AwakeEntities, "awake-native", this.awakeCursor);
+                sleeping = scanner.ScanPage(data.Entities.SleepingEntities, "sleeping-native", this.sleepingCursor);
+            }
+            this.sleepingFirst = !this.sleepingFirst;
+            foreach (var candidate in awake.Portals.Concat(sleeping.Portals))
+            {
+                // This bookkeeping needs no further game reads. Do it before checking
+                // the exhausted budget, or a portal found in a large area is lost forever.
+                if (this.known.Count < 128 || this.known.ContainsKey(candidate.Identity)) this.known[candidate.Identity] = candidate;
+                if (budget.CanContinue && !this.observations.Any(x => x.Identity == candidate.Identity)) this.Observe(candidate, budget);
+            }
+            this.awakeVisited = this.awakeCursor.Examined;
+            this.sleepingVisited = this.sleepingCursor.Examined;
+            this.scanComplete = awake.Complete && sleeping.Complete;
+            this.awakeStopReason = awake.StopReason;
+            this.sleepingStopReason = sleeping.StopReason;
+            this.scanReads = budget.ReadsUsed;
+            this.scanStopReason = budget.StopReason;
             if (this.areaKey != this.GetAreaKey() || !this.memory.IsAlive())
             {
                 this.observations.Clear();
                 this.known.Clear();
+                this.awakeCursor.Reset(); this.sleepingCursor.Reset();
                 this.scanComplete = false;
             }
+        }
+
+        private void Observe(PortalCandidate candidate, ScanBudget budget)
+        {
+            if (!budget.CanContinue) return;
+            var identity = candidate.Identity;
+            var valid = budget.Read<GameOffsets.Objects.Components.ComponentHeader>(identity.Targetable, out var header) && header.EntityPtr.ToInt64() == identity.Entity;
+            PortalFlagReader.Flags? flags = null;
+            if (valid) PortalFlagReader.TryRead(budget, identity, this.memory.ImageStart, this.memory.ImageSize, out flags);
+            var raw = budget.ReadBytes(identity.Targetable, 0x80, out var bytes) ? Convert.ToHexString(bytes) : string.Empty;
+            if (budget.CanContinue) this.observations.Add(new(identity, candidate.Path, valid, flags, candidate.Source, candidate.EntityState, candidate.Components, raw));
         }
 
         private void SaveDiagnostics()
@@ -305,8 +347,13 @@ namespace PortalAccess
                         FlagOffsetsVerified = this.observations.Count > 0 && this.observations.All(x => x.VerifiedFlags != null),
                         FlagVerification = "client-debug-labels-read-only", RecoveryVerified = false,
                         ModifiedFields = this.modifiedFields, FailedAttempts = this.failedAttempts, LastUndo = this.lastUndo,
-                        Collector = "native-bounded-read-only-v3", AwakeVisited = this.awakeVisited,
+                        Collector = "native-paged-read-only-v4", AwakeVisited = this.awakeVisited,
                         SleepingVisited = this.sleepingVisited, ScanComplete = this.scanComplete,
+                        AwakeSize = this.awakeSize, SleepingSize = this.sleepingSize,
+                        ScanPass = this.scanPass, ScanReads = this.scanReads, ScanStopReason = this.scanStopReason,
+                        AwakeStopReason = this.awakeStopReason, SleepingStopReason = this.sleepingStopReason,
+                        AwakeAfterId = this.awakeCursor.AfterId, SleepingAfterId = this.sleepingCursor.AfterId,
+                        RetainedPortals = this.known.Count, LastProcessError = this.memory.LastError,
                         Portals = this.observations }, Formatting.Indented));
             }
             catch (IOException ex) { Console.WriteLine($"[PortalAccess] Diagnostics: {ex.Message}"); }
@@ -321,6 +368,12 @@ namespace PortalAccess
             this.failedAttempts = 0;
             this.areaKey = string.Empty;
             this.known.Clear();
+            this.awakeCursor.Reset(); this.sleepingCursor.Reset();
+            this.sleepingFirst = false;
+            this.scanPass = 0;
+            this.awakeSize = 0; this.sleepingSize = 0;
+            this.scanReads = 0; this.scanStopReason = "none";
+            this.awakeStopReason = "none"; this.sleepingStopReason = "none";
             this.observations.Clear();
             this.awakeVisited = 0;
             this.sleepingVisited = 0;

@@ -18,7 +18,17 @@ namespace PortalAccess
     }
 
     internal sealed record PortalCandidate(PortalIdentity Identity, string Path, string Source, byte EntityState, string[] Components);
-    internal sealed record ScanResult(List<PortalCandidate> Portals, int Visited, bool Complete);
+    internal sealed record ScanResult(List<PortalCandidate> Portals, int Visited, bool Complete, string StopReason = "none");
+
+    /// <summary>Only the ordered entity key survives a sample, never a traversal stack of old pointers.</summary>
+    internal sealed class PortalScanCursor
+    {
+        internal long Head;
+        internal uint? AfterId;
+        internal int Examined;
+        internal bool Complete;
+        internal void Reset() { this.Head = 0; this.AfterId = null; this.Examined = 0; this.Complete = false; }
+    }
 
     /// <summary>Reads current native entity maps, including invalid entities and decorations.</summary>
     internal sealed class PortalScanner
@@ -57,6 +67,58 @@ namespace PortalAccess
                 if (node.Right != IntPtr.Zero) pending.Push(node.Right.ToInt64());
             }
             return new(portals, visited.Count, complete && pending.Count == 0 && this.canContinue());
+        }
+
+        /// <summary>Resume an ordered scan from its last fully inspected key, seeking again from the live root.</summary>
+        internal ScanResult ScanPage(StdMap map, string source, PortalScanCursor cursor, int maxEntities = 128)
+        {
+            var portals = new List<PortalCandidate>();
+            if (cursor.Head != map.Head.ToInt64()) { cursor.Reset(); cursor.Head = map.Head.ToInt64(); }
+            if (map.Size < 0 || map.Size > 100000 || maxEntities <= 0) return new(portals, 0, false, "invalid-map");
+            if (map.Size == 0) { cursor.Complete = true; return new(portals, 0, true); }
+            if (cursor.Complete) return new(portals, 0, true);
+            if (!this.canContinue() || !this.memory.Read<StdMapNode<EntityNodeKey, EntityNodeValue>>(cursor.Head, out var head))
+                return new(portals, 0, false, "head-read-or-budget");
+
+            var pending = new Stack<StdMapNode<EntityNodeKey, EntityNodeValue>>();
+            var visited = new HashSet<long>();
+            var address = head.Parent.ToInt64();
+            var examined = 0;
+            while (this.canContinue())
+            {
+                // Lower-bound search excludes already inspected keys. A changed tree is
+                // reread each call; rotations/removals do not reuse saved node addresses.
+                while (address != 0 && address != cursor.Head)
+                {
+                    if (!this.canContinue()) return new(portals, examined, false, "budget-or-area");
+                    if (visited.Count >= 2000) return new(portals, examined, false, "node-limit");
+                    if (!visited.Add(address)) return new(portals, examined, false, "tree-cycle");
+                    if (!this.memory.Read<StdMapNode<EntityNodeKey, EntityNodeValue>>(address, out var node))
+                        return new(portals, examined, false, "node-read-failed");
+                    if (node.IsNil || node.Color > 1) return new(portals, examined, false, "invalid-node");
+                    if (cursor.AfterId.HasValue && node.Data.Key.id <= cursor.AfterId.Value)
+                        address = node.Right.ToInt64();
+                    else { pending.Push(node); address = node.Left.ToInt64(); }
+                }
+                if (pending.Count == 0)
+                {
+                    cursor.Complete = true;
+                    return new(portals, examined, true);
+                }
+                if (examined >= maxEntities) return new(portals, examined, false, "page-limit");
+                var next = pending.Pop();
+                if (cursor.AfterId.HasValue && next.Data.Key.id <= cursor.AfterId.Value) return new(portals, examined, false, "tree-changed");
+                var found = this.TryReadCandidate(next.Data.Value.EntityPtr.ToInt64(), next.Data.Key.id, source, out var candidate);
+                if (found) portals.Add(candidate!);
+                // A partial candidate must be retried. Otherwise a budget boundary can
+                // permanently skip the very portal we were trying to discover.
+                if (!this.canContinue()) return new(portals, examined, false, "budget-or-area");
+                cursor.AfterId = next.Data.Key.id;
+                cursor.Examined++;
+                examined++;
+                address = next.Right.ToInt64();
+            }
+            return new(portals, examined, false, "budget-or-area");
         }
 
         public bool TryReadCandidate(long address, uint id, string source, out PortalCandidate? candidate)
@@ -110,6 +172,17 @@ namespace PortalAccess
         private bool TryReadName(long address, out string name)
         {
             name = string.Empty;
+            // Component names are immutable short strings. A single bounded read avoids
+            // spending a process-memory call per character; keep the narrow fallback for
+            // a string at the end of a readable page.
+            if (this.memory.ReadBytes(address, 64, out var block))
+            {
+                var end = Array.IndexOf(block, (byte)0);
+                if (end <= 0) return false;
+                for (var i = 0; i < end; i++) if (block[i] < 32 || block[i] > 126) return false;
+                name = Encoding.ASCII.GetString(block, 0, end);
+                return true;
+            }
             var bytes = new List<byte>();
             for (var i = 0; i < 64; i++)
             {

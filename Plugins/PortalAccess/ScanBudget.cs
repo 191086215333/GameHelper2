@@ -13,6 +13,7 @@ namespace PortalAccess
         private readonly Func<bool> current;
         private readonly long deadline;
         private int remaining;
+        public int ReadsUsed { get; private set; }
 
         public ScanBudget(IRemoteMemory memory, Func<bool> current, int maxReads = 4000, int milliseconds = 15)
         {
@@ -23,7 +24,9 @@ namespace PortalAccess
         }
 
         public bool CanContinue => this.remaining > 0 && Stopwatch.GetTimestamp() < this.deadline && this.current();
-        private bool Take() { if (!this.CanContinue) return false; this.remaining--; return true; }
+        public string StopReason => !this.current() ? "area-changed" : this.remaining <= 0 ? "read-limit" :
+            Stopwatch.GetTimestamp() >= this.deadline ? "time-limit" : "none";
+        private bool Take() { if (!this.CanContinue) return false; this.remaining--; this.ReadsUsed++; return true; }
         public bool Read<T>(long address, out T value) where T : unmanaged
         {
             value = default;

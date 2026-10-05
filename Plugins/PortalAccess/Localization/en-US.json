@@ -25,9 +25,10 @@
   "table.valid": "Passed",
   "table.invalid": "Skipped",
   "status.scan": "Scanned entities: awake {0}, sleeping {1}; retained portals {2}",
-  "status.scan_incomplete": "The sample ended at its time/read limit or the area changed. Some portals may be missing.",
+  "status.scan_incomplete": "Discovery is continuing in batches. Found portals are retained; area changes reset progress. Export diagnostics to see the stopping reason.",
   "table.hidden": "Hidden from player",
   "table.quest": "Quest requirements",
   "table.item": "Item requirements",
-  "status.unsupported": "Client layout not recognized; all recovery writes are blocked"
+  "status.unsupported": "Client layout not recognized; all recovery writes are blocked",
+  "status.scanning": "Scanning the area in batches; continuing from the previous position"
 }

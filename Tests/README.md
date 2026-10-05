@@ -20,7 +20,7 @@ language switching and stable ImGui IDs. The Python check requires no extra pack
 
 PortalAccess tests cover rejecting arbitrary foreign-process writes, bounding/cancelling scans,
 client debug-label flag discovery, a two-field write gate, native area/loading/player fences,
-unknown profiles, and identity-validated undo (53 checks). They never write to the game.
+unknown profiles, identity-validated undo, and resumable scans beyond 2,500 entities with budget interruption and tree replacement (60 checks). They never write to the game.
 The layout evidence is documented in
 [PortalAccess](../Plugins/PortalAccess/DIAGNOSTIC_LAYOUT.md). OverlayShutdownSmoke creates and closes the actual
 overlay window using isolated settings and no plugins. Run it with the game closed; it checks

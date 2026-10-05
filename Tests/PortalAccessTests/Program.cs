@@ -262,6 +262,97 @@ try
             Data = new StdMapNodeData<EntityNodeKey, EntityNodeValue> { Key = new EntityNodeKey { id = entityId }, Value = new EntityNodeValue { EntityPtr = entity } } });
     }
     var map = new StdMap { Head = head, Size = 1 };
+    StdMap OrderedMap(int count, uint portalId, out IntPtr treeNodes)
+    {
+        var treeHead = Allocate(64); var tree = Allocate(count * 64); treeNodes = tree;
+        IntPtr Build(int lo, int hi, IntPtr parent)
+        {
+            if (lo > hi) return treeHead;
+            var mid = (lo + hi) / 2; var at = tree + mid * 64;
+            var left = Build(lo, mid - 1, at); var right = Build(mid + 1, hi, at);
+            var id = (uint)mid + 1;
+            Write(at, new StdMapNode<EntityNodeKey, EntityNodeValue> { Left = left, Right = right, Parent = parent,
+                Data = new StdMapNodeData<EntityNodeKey, EntityNodeValue> {
+                    Key = new EntityNodeKey { id = id }, Value = new EntityNodeValue { EntityPtr = id == portalId ? entity : IntPtr.Zero } } });
+            return at;
+        }
+        var root = Build(0, count - 1, treeHead);
+        Write(treeHead, new StdMapNode<EntityNodeKey, EntityNodeValue> { IsNil = true, Parent = root });
+        return new StdMap { Head = treeHead, Size = count };
+    }
+    Test("Paged discovery eventually reaches a portal beyond 2000 entities with tiny read budgets", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal", entityId: 2503);
+        var many = OrderedMap(2503, 2503, out _); var cursor = new PortalScanCursor();
+        var found = new List<PortalCandidate>(); var pages = 0; var previous = 0;
+        while (!cursor.Complete && pages++ < 200)
+        {
+            var budget = new ScanBudget(native, () => true, maxReads: 130, milliseconds: 1000);
+            var page = new PortalScanner(budget, () => budget.CanContinue).ScanPage(many, "paged", cursor, 37);
+            found.AddRange(page.Portals);
+            Check(cursor.Examined >= previous && page.Visited <= 37 && budget.ReadsUsed <= 130);
+            previous = cursor.Examined;
+        }
+        Check(cursor.Complete && cursor.Examined == 2503 && pages > 1 && found.Any(x => x.Identity.Id == 2503));
+    });
+    Test("Budget exhaustion midway through a candidate retries the same key", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal"); var cursor = new PortalScanCursor();
+        var budget = new ScanBudget(native, () => true, maxReads: 5, milliseconds: 1000);
+        var partial = new PortalScanner(budget, () => budget.CanContinue).ScanPage(map, "paged", cursor);
+        Check(!partial.Complete && cursor.AfterId == null && budget.StopReason == "read-limit");
+        var retry = scanner.ScanPage(map, "paged", cursor);
+        Check(retry.Complete && retry.Portals.Count == 1 && cursor.AfterId == 123);
+    });
+    Test("A discovered portal is returned even when the final candidate read consumes the budget", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal");
+        var measure = new ScanBudget(native, () => true, milliseconds: 1000);
+        Check(new PortalScanner(measure, () => measure.CanContinue).ScanPage(map, "measure", new()).Portals.Count == 1);
+        var exact = new ScanBudget(native, () => true, maxReads: measure.ReadsUsed, milliseconds: 1000);
+        var page = new PortalScanner(exact, () => exact.CanContinue).ScanPage(map, "boundary", new());
+        Check(page.Portals.Count == 1 && !exact.CanContinue);
+    });
+    Test("Resuming seeks the current tree root instead of reading a saved traversal pointer", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal", entityId: 3);
+        var tree = OrderedMap(3, 3, out var treeNodes); var cursor = new PortalScanCursor();
+        Check(scanner.ScanPage(tree, "first", cursor, 1).Visited == 1 && cursor.AfterId == 1);
+        // The first two nodes disappear between pages. Only node 3 remains under the same head.
+        Write(tree.Head, new StdMapNode<EntityNodeKey, EntityNodeValue> { IsNil = true, Parent = treeNodes + 128 });
+        Write(treeNodes + 128, new StdMapNode<EntityNodeKey, EntityNodeValue> { Left = tree.Head, Right = tree.Head, Parent = tree.Head,
+            Data = new StdMapNodeData<EntityNodeKey, EntityNodeValue> { Key = new EntityNodeKey { id = 3 }, Value = new EntityNodeValue { EntityPtr = entity } } });
+        Marshal.Copy(new byte[128], 0, treeNodes, 128); tree.Size = 1;
+        var page = scanner.ScanPage(tree, "resume", cursor);
+        Check(page.Complete && page.Portals.Count == 1 && page.Portals[0].Identity.Id == 3);
+    });
+    Test("A replaced map head resets key progress even if its previous sweep completed", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal"); var cursor = new PortalScanCursor();
+        Check(scanner.ScanPage(map, "first", cursor).Complete);
+        Metadata("Metadata/MiscellaneousObjects/MapPortal", entityId: 1);
+        var replacement = OrderedMap(1, 1, out _);
+        Check(scanner.ScanPage(replacement, "new-head", cursor).Portals.Count == 1 && cursor.AfterId == 1);
+    });
+    Test("Area cancellation makes no cursor progress and malformed trees cannot hang", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal"); var cursor = new PortalScanCursor();
+        var cancelled = new ScanBudget(native, () => false, milliseconds: 1000);
+        Check(!new PortalScanner(cancelled, () => cancelled.CanContinue).ScanPage(map, "cancelled", cursor).Complete);
+        Check(cursor.AfterId == null && cancelled.ReadsUsed == 0 && cancelled.StopReason == "area-changed");
+        Marshal.WriteIntPtr(node, node);
+        Check(!scanner.ScanPage(map, "cycle", cursor).Complete && cursor.AfterId == null);
+    });
+    Test("Read, time and parent-child budget limits remain independently visible", () =>
+    {
+        var expired = new ScanBudget(native, () => true, milliseconds: 0);
+        Check(expired.StopReason == "time-limit");
+        var parent = new ScanBudget(native, () => true, maxReads: 2, milliseconds: 1000);
+        var child = new ScanBudget(parent, () => parent.CanContinue, maxReads: 1, milliseconds: 1000);
+        Check(child.ReadByte(target.ToInt64(), out _) && child.ReadsUsed == 1 && parent.ReadsUsed == 1);
+        Check(!child.ReadByte(target.ToInt64(), out _) && parent.ReadByte(target.ToInt64(), out _));
+        Check(parent.StopReason == "read-limit" && parent.ReadsUsed == 2);
+    });
     Test("Native map discovery reads a closed portal first encountered as invalid", () =>
     {
         Metadata("Metadata/MiscellaneousObjects/MapPortal");
