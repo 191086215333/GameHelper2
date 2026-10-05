@@ -20,8 +20,20 @@ namespace PortalAccess
     internal sealed class PatchLedger
     {
         private readonly Dictionary<FieldKey, byte> originals = new();
+        private readonly HashSet<PortalIdentity> repaired = new();
         public int Pending => this.originals.Count;
-        public void Clear() => this.originals.Clear();
+        public void Clear() { this.originals.Clear(); this.repaired.Clear(); }
+
+        public (int Changed, int Failed) Maintain(IByteMemory memory, PortalIdentity portal, int targetOffset, int highlightOffset, Func<PortalIdentity, bool> validate)
+        {
+            // Match the reference's one successful repair per entity/area. Continually
+            // re-opening a consumed old gate can replace newly created portals.
+            if (this.repaired.Contains(portal)) return (0, 0);
+            var targetOk = this.Apply(memory, portal, targetOffset, validate, out var targetChanged);
+            var highlightOk = this.Apply(memory, portal, highlightOffset, validate, out var highlightChanged);
+            if (targetOk && highlightOk && (targetChanged || highlightChanged)) this.repaired.Add(portal);
+            return ((targetChanged ? 1 : 0) + (highlightChanged ? 1 : 0), (targetOk ? 0 : 1) + (highlightOk ? 0 : 1));
+        }
 
         public void Retain(ISet<PortalIdentity> live)
         {

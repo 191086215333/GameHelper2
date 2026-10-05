@@ -15,9 +15,9 @@ this is not a complete translation database for every equipment modifier.
 - **LootTracker** records active area time and observed positive changes in backpack currency,
   with a compact HUD, session history and CSV exports. Values use LootValue's current cache.
   See [tracking behavior and limitations](Plugins/LootTracker/README.md).
-- **PortalAccess** is experimental and defaults to observation only. Its opt-in recovery switch
-  writes two client-side interaction flags on still-resident portal entities. It does not establish
-  that the server will allow map re-entry. See [behavior and validation limits](Plugins/PortalAccess/README.md).
+- **PortalAccess** recovery is suspended after an area-entry crash. This build only performs
+  bounded read-only diagnostics, resets old enabled recovery settings and blocks game writes.
+  Read-only diagnostics identify four flag offsets from the client's own debug labels; recovery remains unverified. See [details](Plugins/PortalAccess/README.md).
 
 Chinese guides: [简体中文](README.zh-CN.local.md) · [繁體中文](README.zh-Hant.local.md).
 Reproducible offline checks and rendering tools are documented in [Tests/README.md](Tests/README.md).

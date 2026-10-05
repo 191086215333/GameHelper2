@@ -7,7 +7,7 @@ namespace PortalAccess
 
     public sealed class PortalAccessSettings : IPSettings
     {
-        // New installs observe first; actual client changes require this explicit switch.
+        // Retained for config compatibility. This build forces observation-only mode.
         public bool RestoreInteraction;
         public int RefreshIntervalMs = 1000;
         public int AreaDelayMs = 1500;

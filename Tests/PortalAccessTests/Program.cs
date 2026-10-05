@@ -83,6 +83,34 @@ Test("Repeated recovery retains the original and does not grow records", () =>
     Check(ledger.Pending == 1 && ledger.Restore(memory, _ => true) == 1 && memory.Bytes[address] == 0);
 });
 
+Test("Consumed portal is repaired only once until the area is reset", () =>
+{
+    var memory = new FakeMemory(); var ledger = new PatchLedger();
+    memory.Bytes[address] = 0; memory.Bytes[address + 1] = 0;
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 2);
+    memory.Bytes[address] = 0; memory.Bytes[address + 1] = 0;
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 0 && memory.Writes == 2);
+    ledger.Clear();
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 2);
+});
+Test("Initially open portal can still be recovered when it closes later", () =>
+{
+    var memory = new FakeMemory(); var ledger = new PatchLedger();
+    memory.Bytes[address] = 1; memory.Bytes[address + 1] = 1;
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 0);
+    memory.Bytes[address] = 0; memory.Bytes[address + 1] = 0;
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 2);
+});
+Test("A partially failed portal remains eligible for a later repair", () =>
+{
+    var memory = new FakeMemory { FailedAddress = address + 1 }; var ledger = new PatchLedger();
+    memory.Bytes[address] = 0; memory.Bytes[address + 1] = 0;
+    var first = ledger.Maintain(memory, portal, offset, offset + 1, _ => true);
+    Check(first.Changed == 1 && first.Failed == 1);
+    memory.FailedAddress = 0;
+    Check(ledger.Maintain(memory, portal, offset, offset + 1, _ => true).Changed == 1);
+});
+
 // Use only this test process's allocated memory. Never attach to the game for these tests.
 var allocations = new List<IntPtr>();
 IntPtr Allocate(int count)
@@ -102,25 +130,29 @@ try
         Marshal.StructureToPtr(new ComponentHeader { EntityPtr = entity, StaticPtr = dummyVtable }, target, false);
         Marshal.StructureToPtr(new ComponentHeader { EntityPtr = entity, StaticPtr = dummyVtable }, gate, false);
         Marshal.WriteIntPtr(vector, target); Marshal.WriteIntPtr(vector, 8, gate);
-        Marshal.WriteByte(target, PortalMemory.TargetOffset, 0); Marshal.WriteByte(target, PortalMemory.HighlightOffset, 0);
+        Marshal.WriteByte(target, PortalMemory.FixtureTargetOffset, 0); Marshal.WriteByte(target, PortalMemory.FixtureHighlightOffset, 0);
     }
     using var native = new PortalMemory();
     Reset();
+    Test("Writable attachments outside the test process are blocked", () =>
+    {
+        Check(!native.Attach(0, true) && native.LastError == 5 && native.Session == string.Empty);
+    });
     Test("Native read-only handle rejects writes", () =>
     {
         Check(native.Attach((uint)Environment.ProcessId, false));
         Check(native.Validate(identity));
-        Check(!native.WriteByte(target.ToInt64() + PortalMemory.TargetOffset, 1));
+        Check(!native.WriteByte(target.ToInt64() + PortalMemory.FixtureTargetOffset, 1));
     });
     Test("Native one-byte update and rollback preserve neighboring bytes", () =>
     {
         Check(native.Attach((uint)Environment.ProcessId, true));
-        Marshal.WriteByte(target, PortalMemory.TargetOffset - 1, 0x7B);
+        Marshal.WriteByte(target, PortalMemory.FixtureTargetOffset - 1, 0x7B);
         var ledger = new PatchLedger();
-        Check(ledger.Apply(native, identity, PortalMemory.TargetOffset, native.Validate, out var changed) && changed);
-        Check(Marshal.ReadByte(target, PortalMemory.TargetOffset) == 1);
-        Check(Marshal.ReadByte(target, PortalMemory.TargetOffset - 1) == 0x7B);
-        Check(Marshal.ReadByte(target, PortalMemory.HighlightOffset) == 0);
+        Check(ledger.Apply(native, identity, PortalMemory.FixtureTargetOffset, native.Validate, out var changed) && changed);
+        Check(Marshal.ReadByte(target, PortalMemory.FixtureTargetOffset) == 1);
+        Check(Marshal.ReadByte(target, PortalMemory.FixtureTargetOffset - 1) == 0x7B);
+        Check(Marshal.ReadByte(target, PortalMemory.FixtureHighlightOffset) == 0);
         Check(ledger.Restore(native, native.Validate) == 1);
     });
     Test("Native identity rejects a changed entity ID", () =>
@@ -142,7 +174,176 @@ try
     });
     Test("Native identity rejects out-of-range flag bytes", () =>
     {
-        Reset(); Marshal.WriteByte(target, PortalMemory.HighlightOffset, 7); Check(!native.Validate(identity));
+        Reset(); Marshal.WriteByte(target, PortalMemory.FixtureHighlightOffset, 7); Check(!native.Validate(identity));
+    });
+
+    var scanner = new PortalScanner(native);
+    Test("Read budget stops without returning fabricated data", () =>
+    {
+        var budget = new ScanBudget(native, () => true, maxReads: 1, milliseconds: 1000);
+        Check(budget.ReadByte(target.ToInt64(), out _));
+        Check(!budget.ReadByte(target.ToInt64(), out _) && !budget.CanContinue);
+        Check(!budget.WriteByte(target.ToInt64() + PortalMemory.FixtureTargetOffset, 1));
+    });
+    Test("Area-change cancellation rejects further reads", () =>
+    {
+        var current = true;
+        var budget = new ScanBudget(native, () => current, milliseconds: 1000);
+        Check(budget.ReadByte(target.ToInt64(), out _));
+        current = false;
+        Check(!budget.ReadByte(target.ToInt64(), out _) && !budget.CanContinue);
+    });
+    Test("An expired time budget rejects candidate parsing", () =>
+    {
+        var budget = new ScanBudget(native, () => true, milliseconds: 0);
+        Check(!new PortalScanner(budget, () => budget.CanContinue).TryReadCandidate(entity.ToInt64(), 123, "test", out _));
+    });
+    var lookup = Allocate(256); var names = Allocate(32);
+    var targetName = Allocate(32); var portalName = Allocate(32);
+    var head = Allocate(64); var node = Allocate(64);
+    void Write<T>(IntPtr destination, T data) where T : unmanaged
+    {
+        var bytes = MemoryMarshal.AsBytes(new[] { data }.AsSpan()).ToArray();
+        Marshal.Copy(bytes, 0, destination, bytes.Length);
+    }
+    void Metadata(string path, string secondName = "Portal", uint entityId = 123)
+    {
+        Reset();
+        var raw = System.Text.Encoding.Unicode.GetBytes(path); var pathPtr = Allocate(raw.Length);
+        Marshal.Copy(raw, 0, pathPtr, raw.Length);
+        Write(details, new EntityDetails { name = new StdWString { Buffer = pathPtr, Length = path.Length, Capacity = path.Length }, ComponentLookUpPtr = lookup });
+        Write(lookup, new ComponentLookUpStruct { ComponentsNameAndIndex = new StdBucket {
+            Data = new StdVector { First = names, Last = names + 32, End = names + 32 }, Capacity = 2 } });
+        Marshal.Copy(System.Text.Encoding.ASCII.GetBytes("Targetable\0"), 0, targetName, 11);
+        var second = System.Text.Encoding.ASCII.GetBytes(secondName + "\0"); Marshal.Copy(second, 0, portalName, second.Length);
+        Write(names, new ComponentNameAndIndexStruct { NamePtr = targetName, Index = 0 });
+        Write(names + 16, new ComponentNameAndIndexStruct { NamePtr = portalName, Index = 1 });
+        var disabled = entityData; disabled.Id = entityId; disabled.IsValid = 3; Write(entity, disabled);
+        Write(head, new StdMapNode<EntityNodeKey, EntityNodeValue> { IsNil = true, Parent = node });
+        Write(node, new StdMapNode<EntityNodeKey, EntityNodeValue> { Left = head, Right = head, Parent = head,
+            Data = new StdMapNodeData<EntityNodeKey, EntityNodeValue> { Key = new EntityNodeKey { id = entityId }, Value = new EntityNodeValue { EntityPtr = entity } } });
+    }
+    var map = new StdMap { Head = head, Size = 1 };
+    Test("Native map discovery reads a closed portal first encountered as invalid", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal");
+        var sample = scanner.Scan(map, "awake-native");
+        Check(sample.Complete && sample.Portals.Count == 1 && sample.Portals[0].EntityState == 3);
+        Check(native.Validate(sample.Portals[0].Identity));
+    });
+    Test("Native discovery includes sleeping and high-ID cosmetic portals", () =>
+    {
+        Metadata("Metadata/Effects/Microtransactions/Town_Portals/ExamplePortal", entityId: 0x40000007);
+        var sample = scanner.Scan(map, "sleeping-native");
+        Check(sample.Portals.Count == 1 && sample.Portals[0].Identity.Id == 0x40000007 && sample.Portals[0].Source == "sleeping-native");
+    });
+    Test("Map-object path fallback works without a Portal component", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal", "Render");
+        var sample = scanner.Scan(map, "awake-native");
+        Check(sample.Portals.Count == 1 && sample.Portals[0].Identity.Portal == 0);
+        Check(native.Validate(sample.Portals[0].Identity));
+    });
+    Test("Portal-named monster and spell effects are excluded", () =>
+    {
+        Metadata("Metadata/Monsters/PortalMonster"); Check(scanner.Scan(map, "awake").Portals.Count == 0);
+        Metadata("Metadata/Effects/Spells/IcePortal", "Render"); Check(scanner.Scan(map, "awake").Portals.Count == 0);
+    });
+    Test("Retained portal must still match its live entity ID", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal");
+        Check(scanner.TryReadCandidate(entity.ToInt64(), 123, "retained", out var saved));
+        var replacement = entityData; replacement.Id = 456; Write(entity, replacement);
+        Check(!scanner.TryReadCandidate(entity.ToInt64(), saved!.Identity.Id, "retained", out _));
+    });
+    Test("Malformed native trees terminate and report an incomplete scan", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal");
+        Marshal.WriteIntPtr(node, node);
+        Check(!scanner.Scan(map, "awake").Complete);
+    });
+    Test("A scan interrupted by area loading reports incomplete", () =>
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal");
+        var budget = new ScanBudget(native, () => false, milliseconds: 1000);
+        var sample = new PortalScanner(budget, () => budget.CanContinue).Scan(map, "awake");
+        Check(sample.Visited == 0 && !sample.Complete && sample.Portals.Count == 0);
+    });
+    Test("Native tree traversal has a hard entity limit", () =>
+    {
+        const int count = 2003;
+        var largeHead = Allocate(64); var nodes = Allocate(count * 64);
+        Write(largeHead, new StdMapNode<EntityNodeKey, EntityNodeValue> { IsNil = true, Parent = nodes });
+        for (var i = 0; i < count; i++)
+            Write(nodes + i * 64, new StdMapNode<EntityNodeKey, EntityNodeValue> { Left = i + 1 < count ? nodes + (i + 1) * 64 : largeHead, Right = largeHead, Parent = largeHead });
+        var sample = scanner.Scan(new StdMap { Head = largeHead, Size = count }, "awake");
+        Check(sample.Visited == 2000 && !sample.Complete);
+    });
+    var debugImage = Allocate(4096);
+    void DebugFlags(int t = 0x69, int h = 0x73, int q = 0x6E, int it = 0x6F)
+    {
+        Reset();
+        Marshal.Copy(new byte[4096], 0, debugImage, 4096);
+        Marshal.StructureToPtr(new ComponentHeader { EntityPtr = entity, StaticPtr = debugImage }, target, false);
+        Marshal.WriteIntPtr(debugImage, 13 * 8, debugImage + 0x100);
+        var labels = new[] { "Targetable: ", "Hidden from Player: ", "Meets Quest State: ", "Meets Item Requirements: " };
+        var offsets = new[] { t, h, q, it };
+        for (var i = 0; i < labels.Length; i++)
+        {
+            var pos = 0x100 + i * 42;
+            var text = 0x400 + i * 64;
+            var code = new byte[] { 0x48, 0x8D, 0x15, 0, 0, 0, 0, 0x48, 0x8B, 0xCB, 0xE8, 0, 0, 0, 0,
+                0x0F, 0xB6, 0x57, (byte)offsets[i], 0x48, 0x8B, 0xC8, 0xE8, 0, 0, 0, 0 };
+            BitConverter.GetBytes(text - pos - 7).CopyTo(code, 3);
+            Marshal.Copy(code, 0, debugImage + pos, code.Length);
+            var label = System.Text.Encoding.Unicode.GetBytes(labels[i] + "\0");
+            Marshal.Copy(label, 0, debugImage + text, label.Length);
+            Marshal.WriteByte(target, offsets[i], (byte)(i < 2 ? 0 : 1));
+        }
+    }
+    bool ReadFlags(out PortalFlagReader.Flags? flags) =>
+        PortalFlagReader.TryRead(native, identity, debugImage.ToInt64(), 4096, out flags);
+    Test("Client debug labels identify flags without reading legacy pointer bytes", () =>
+    {
+        DebugFlags();
+        Marshal.WriteByte(target, 0x51, 1); Marshal.WriteByte(target, 0x52, 1);
+        Check(ReadFlags(out var flags) && flags!.TargetOffset == 0x69 && flags.HiddenOffset == 0x73 &&
+            flags.Targetable == 0 && flags.HiddenFromPlayer == 0 && flags.MeetsQuestState == 1 && flags.MeetsItemRequirements == 1);
+    });
+    Test("Changed field offsets are recovered from labels instead of guessed", () =>
+    {
+        DebugFlags(0x70, 0x77, 0x75, 0x76);
+        Check(ReadFlags(out var flags) && flags!.TargetOffset == 0x70 && flags.HiddenOffset == 0x77 && flags.QuestOffset == 0x75);
+    });
+    Test("Unrecognized debug instructions do not produce flag values", () =>
+    {
+        DebugFlags(); Marshal.WriteByte(debugImage, 0x100 + 15, 0x90);
+        Check(!ReadFlags(out var flags) && flags == null);
+    });
+    Test("Missing semantic label cannot validate a layout", () =>
+    {
+        DebugFlags(); Marshal.WriteInt16(debugImage, 0x400, (short)'X'); Check(!ReadFlags(out _));
+    });
+    Test("Overlapping flag offsets are rejected", () =>
+    {
+        DebugFlags(0x69, 0x69); Check(!ReadFlags(out _));
+    });
+    Test("Debug methods outside the executable image are rejected", () =>
+    {
+        DebugFlags(); Marshal.WriteIntPtr(debugImage, 13 * 8, debugImage + 4096); Check(!ReadFlags(out _));
+    });
+    Test("Identified flags still reject non-boolean values", () =>
+    {
+        DebugFlags(); Marshal.WriteByte(target, 0x69, 7); Check(!ReadFlags(out _));
+    });
+    Test("Flag diagnostics reject recycled entity identities", () =>
+    {
+        DebugFlags(); var changed = entityData; changed.Id++; Write(entity, changed); Check(!ReadFlags(out _));
+    });
+    Test("Flag inspection respects the shared read budget", () =>
+    {
+        DebugFlags(); var budget = new ScanBudget(native, () => true, maxReads: 2, milliseconds: 1000);
+        Check(!PortalFlagReader.TryRead(budget, identity, debugImage.ToInt64(), 4096, out var flags) && flags == null);
     });
     Test("Disposed handle cannot read or write", () =>
     {
@@ -158,11 +359,12 @@ sealed class FakeMemory : IByteMemory
     public int Writes;
     public bool FailWrites;
     public bool IgnoreWrites;
+    public long FailedAddress;
     public bool ReadByte(long address, out byte value) => this.Bytes.TryGetValue(address, out value);
     public bool WriteByte(long address, byte value)
     {
         this.Writes++;
-        if (this.FailWrites) return false;
+        if (this.FailWrites || address == this.FailedAddress) return false;
         if (!this.IgnoreWrites) this.Bytes[address] = value;
         return true;
     }

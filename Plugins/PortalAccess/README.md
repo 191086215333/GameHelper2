@@ -1,29 +1,29 @@
-# PortalAccess (experimental)
+# PortalAccess (recovery paused)
 
-Open F12 → Maps & earnings → Portal interaction recovery. The default is **observation only**;
-the plugin uses a separate read-only handle and displays detected portals and validation results.
-Enabling **Restore portal interaction** opens a plugin-owned writable handle and attempts to set
-the existing Targetable component's selectable/highlightable bytes from 0 to 1. The framework's
-normal memory handle remains read-only.
+After an area-entry access-violation crash on 2026-10-05, this build suspends interaction
+recovery. F12 → Maps & earnings → Portal interaction recovery now offers **read-only
+diagnostics**. Old `RestoreInteraction: true` settings are reset and the switch is disabled.
+The plugin never opens a writable game handle and performs no undo writes on shutdown.
+The low-level writable path is restricted to the current process for offline tests only.
 
-This does not recreate removed entities, change server-side map limits or prove that a server
-will accept a re-entry request. Current-version in-game behavior has not been verified.
+The crash dump contains an invalid `0x10100` pointer, consistent with the previous two
+one-byte writes. Read-only inspection of the same game image identifies the Targetable
+destructor in that crash stack and its vector at 0x50: the inherited 0x51/0x52 fields fall
+inside that vector's pointer. This strongly identifies a layout error; the dump omits
+the actual heap object. Do not use the framework's inherited field offsets for writes.
 
-Targets must have an actual Portal component, not merely a matching substring in their path.
-Before each write the plugin checks the current process/area session, entity ID and details,
-component ownership, live component vector membership and boolean byte values. Addresses come
-from the framework's existing named offsets. These checks cannot guarantee version compatibility
-or eliminate races with the remote process; field offsets can change after game updates.
+Diagnostics identify four boolean offsets through the current Targetable debug method's
+UTF-16 labels: Targetable, Hidden from Player, Meets Quest State, Meets Item Requirements.
+The method and labels must lie within the attached game's executable image, labels must
+be distinct, values must be boolean, and the entity/component identity must match before
+and after reading. Unknown methods produce no flag values. This validates read-only field
+interpretation, not highlighting, model rendering or server re-entry. Recovery stays paused.
 
-The default interval is 1,000 ms, with 1,500 ms settling time after an area change. Loading,
-returning to the same area and process replacement invalidate old records. Turning the switch off,
-disabling the plugin or normal application shutdown attempts to undo fields that still belong
-to the same entity and still hold this plugin's written value. Crashes and forced termination
-cannot guarantee cleanup.
+Discovery reads native awake/sleeping maps and checks retained portal identities. One sample
+shares a 15 ms / 4,000-read budget, with at most 2,000 nodes per map and 128 retained identities.
+Checks stop when loading/process state changes. A limit or failed read produces an incomplete
+sample, never a fabricated zero. Large maps may have portals missing from diagnostics.
 
-Settings and optional diagnostic exports stay in the plugin's ignored `config/` directory.
-Diagnostics describe the current portal sample, not successful map entries. No proprietary
-binary, authentication mechanism or third-party executable is bundled.
-
-[Offline tests](../../Tests/README.md) cover simulated failures and read/write/undo against only
-the test process's own allocated memory. No test attaches to the game.
+Settings and diagnostic exports live in `config/`; active samples refresh the export every
+10 seconds. No proprietary executable or authentication code is bundled. Offline tests use
+fake memory and their own allocations, never the game; see [tests](../../Tests/README.md).

@@ -155,7 +155,8 @@ namespace GameHelper
         /// </summary>
         internal static void Dispose()
         {
-            // Give plugins access to the still-live state for their normal cleanup/undo.
+            // GameOverlay first stops and joins rendering, then plugins finish using
+            // the still-live process state before its handle is closed.
             Plugin.PManager.Shutdown();
             Process.Close(false);
         }

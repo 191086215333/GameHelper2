@@ -6,22 +6,36 @@ namespace PortalAccess
     using System;
     using System.Diagnostics;
     using System.Runtime.InteropServices;
+    using System.Runtime.CompilerServices;
     using GameOffsets.Objects.Components;
     using GameOffsets.Objects.States.InGameState;
     using Microsoft.Win32.SafeHandles;
 
     /// <summary>A plugin-owned handle; the framework and other plugins remain read-only.</summary>
-    internal sealed class PortalMemory : IByteMemory, IDisposable
+    internal sealed class PortalMemory : IRemoteMemory, IDisposable
     {
         private SafeProcessHandle? handle;
         private bool writable;
         public string Session { get; private set; } = string.Empty;
         public int LastError { get; private set; }
-        public static readonly int TargetOffset = Marshal.OffsetOf<TargetableOffsets>(nameof(TargetableOffsets.IsTargetable)).ToInt32();
-        public static readonly int HighlightOffset = Marshal.OffsetOf<TargetableOffsets>(nameof(TargetableOffsets.IsHighlightable)).ToInt32();
+        public long ImageStart { get; private set; }
+        public int ImageSize { get; private set; }
+        // Legacy offsets are used only in offline own-process fixtures. Live flags
+        // must be interpreted by PortalFlagReader; these locations are pointers in
+        // the inspected 2026-10-05 client and must never be used for game writes.
+        public static readonly int FixtureTargetOffset = Marshal.OffsetOf<TargetableOffsets>(nameof(TargetableOffsets.IsTargetable)).ToInt32();
+        public static readonly int FixtureHighlightOffset = Marshal.OffsetOf<TargetableOffsets>(nameof(TargetableOffsets.IsHighlightable)).ToInt32();
 
         public bool Attach(uint pid, bool write)
         {
+            // The current game layout is unverified after an access-violation crash.
+            // Keep writes available only to offline tests against their own process.
+            if (write && pid != (uint)Environment.ProcessId)
+            {
+                this.Dispose();
+                this.LastError = 5;
+                return false;
+            }
             try
             {
                 using var process = Process.GetProcessById(checked((int)pid));
@@ -37,6 +51,8 @@ namespace PortalAccess
                     return false;
                 }
                 this.Session = session;
+                this.ImageStart = process.MainModule?.BaseAddress.ToInt64() ?? 0;
+                this.ImageSize = process.MainModule?.ModuleMemorySize ?? 0;
                 this.writable = write;
                 this.LastError = 0;
                 return this.IsAlive();
@@ -57,11 +73,18 @@ namespace PortalAccess
         public bool Read<T>(long address, out T value) where T : unmanaged
         {
             value = default;
-            var buffer = new byte[Marshal.SizeOf<T>()];
-            if (!AddressValid(address) || this.handle is null || !this.IsAlive() ||
-                !ReadProcessMemory(this.handle, (IntPtr)address, buffer, (nuint)buffer.Length, out var count) || count != (nuint)buffer.Length)
-                return false;
+            if (!this.ReadBytes(address, Unsafe.SizeOf<T>(), out var buffer)) return false;
             value = MemoryMarshal.Read<T>(buffer);
+            return true;
+        }
+
+        public bool ReadBytes(long address, int length, out byte[] buffer)
+        {
+            buffer = Array.Empty<byte>();
+            if (!AddressValid(address) || length <= 0 || length > 8192 || this.handle is null || !this.IsAlive()) return false;
+            var bytes = new byte[length];
+            if (!ReadProcessMemory(this.handle, (IntPtr)address, bytes, (nuint)length, out var count) || count != (nuint)length) return false;
+            buffer = bytes;
             return true;
         }
 
@@ -77,12 +100,20 @@ namespace PortalAccess
 
         public bool Validate(PortalIdentity portal)
         {
-            if (!AddressValid(portal.Entity) || !AddressValid(portal.Portal) || !AddressValid(portal.Targetable) ||
+            // This validator is for the offline patch-ledger fixture, not live flags.
+            if (!this.Session.StartsWith($"{Environment.ProcessId}:", StringComparison.Ordinal)) return false;
+            if (!AddressValid(portal.Entity) || (portal.Portal != 0 && !AddressValid(portal.Portal)) || !AddressValid(portal.Targetable) ||
                 !this.Read<EntityOffsets>(portal.Entity, out var entity) || entity.Id != portal.Id ||
                 entity.ItemBase.EntityDetailsPtr.ToInt64() != portal.Details || !AddressValid(portal.Details) ||
                 !this.Read<ComponentHeader>(portal.Targetable, out var target) || target.EntityPtr.ToInt64() != portal.Entity ||
-                !this.Read<ComponentHeader>(portal.Portal, out var gate) || gate.EntityPtr.ToInt64() != portal.Entity ||
-                !AddressValid(target.StaticPtr.ToInt64()) || !AddressValid(gate.StaticPtr.ToInt64())) return false;
+                !AddressValid(target.StaticPtr.ToInt64())) return false;
+            if (portal.Portal != 0)
+            {
+                if (!this.Read<ComponentHeader>(portal.Portal, out var gate) || gate.EntityPtr.ToInt64() != portal.Entity ||
+                    !AddressValid(gate.StaticPtr.ToInt64())) return false;
+            }
+            else if (!new PortalScanner(this).TryReadCandidate(portal.Entity, portal.Id, "validation", out var fallback) ||
+                     fallback!.Identity != portal || !PortalScanner.IsSupportedPortalPath(fallback.Path)) return false;
 
             // Verify that the live entity's component vector still contains both components.
             var first = entity.ItemBase.ComponentListPtr.First.ToInt64();
@@ -90,16 +121,16 @@ namespace PortalAccess
             var length = last - first;
             if (!AddressValid(first) || length < 16 || length > 50 * 8 || length % 8 != 0) return false;
             var hasTarget = false;
-            var hasPortal = false;
+            var hasPortal = portal.Portal == 0;
             for (var p = first; p < last; p += 8)
             {
                 if (!this.Read<long>(p, out var component)) return false;
                 hasTarget |= component == portal.Targetable;
                 hasPortal |= component == portal.Portal;
             }
-            return hasTarget && hasPortal && TargetOffset is >= 0 and < 1024 && HighlightOffset is >= 0 and < 1024 &&
-                this.ReadByte(portal.Targetable + TargetOffset, out var t) && t <= 1 &&
-                this.ReadByte(portal.Targetable + HighlightOffset, out var h) && h <= 1;
+            return hasTarget && hasPortal && FixtureTargetOffset is >= 0 and < 1024 && FixtureHighlightOffset is >= 0 and < 1024 &&
+                this.ReadByte(portal.Targetable + FixtureTargetOffset, out var t) && t <= 1 &&
+                this.ReadByte(portal.Targetable + FixtureHighlightOffset, out var h) && h <= 1;
         }
 
         public void Dispose()
@@ -107,6 +138,8 @@ namespace PortalAccess
             this.handle?.Dispose();
             this.handle = null;
             this.Session = string.Empty;
+            this.ImageStart = 0;
+            this.ImageSize = 0;
             this.writable = false;
         }
 

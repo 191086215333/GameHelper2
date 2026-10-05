@@ -8,6 +8,8 @@ python Tests/verify_localization.py
 dotnet run --project Tests/LocalizationSmoke -c Release -- .
 dotnet run --project Tests/LootTrackerTests -c Release
 dotnet run --project Tests/PortalAccessTests -c Release
+dotnet run --project Tests/OverlayShutdownSmoke -c Release
+dotnet run --project Tests/OverlayShutdownSmoke -c Release -- render
 ```
 
 The console projects deliberately stay outside the solution so the full application's plugin
@@ -15,6 +17,14 @@ staging completes first. PortalAccessTests uses fake memory and allocated memory
 process, never the game. LootTrackerTests covers aggregation, interruption, persistence,
 CSV and price-cache validity. LocalizationSmoke exercises both Chinese locales, Ritual terms,
 language switching and stable ImGui IDs. The Python check requires no extra packages.
+
+PortalAccess recovery is currently suspended. Its tests also cover rejecting foreign-process
+writes and bounding/cancelling scans, plus client debug-label flag discovery and rejected
+layouts (44 checks). The layout evidence is documented in
+[PortalAccess](../Plugins/PortalAccess/DIAGNOSTIC_LAYOUT.md). OverlayShutdownSmoke creates and closes the actual
+overlay window using isolated settings and no plugins. Run it with the game closed; it checks
+that the HWND is destroyed before the render thread exits and repeated disposal is harmless.
+It does not validate in-game stability or reproduce every third-party input-method callback.
 
 Optional ImGui rendering/font checks use the Windows Microsoft YaHei font
 (`C:/Windows/Fonts/msyh.ttc`) and require no game or GPU window:
