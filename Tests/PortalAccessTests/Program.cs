@@ -11,6 +11,44 @@ var portal = new PortalIdentity(0x10000, 42, 0x20000, 0x30000, 0x40000);
 const int offset = 0x51;
 var address = portal.Targetable + offset;
 
+Test("Live write gate allows only the verified two bytes and preserves pointer fields", () =>
+{
+    var memory = new FakeMemory();
+    for (var i = 0x48; i < 0x80; i++) memory.Bytes[portal.Targetable + i] = 0;
+    var gate = new PortalWriteGate(portal, memory, () => true);
+    for (var i = 0x48; i < 0x80; i++)
+        Check(gate.WriteByte(portal.Targetable + i, 1) == (i is 0x69 or 0x6A));
+    Check(memory.Writes == 2 && memory.Bytes[portal.Targetable + 0x51] == 0 && memory.Bytes[portal.Targetable + 0x52] == 0);
+});
+Test("Live write gate rejects non-booleans and invalidation immediately before mutation", () =>
+{
+    var memory = new FakeMemory(); var at = portal.Targetable + 0x69; memory.Bytes[at] = 0;
+    var calls = 0; var gate = new PortalWriteGate(portal, memory, () => ++calls == 1);
+    Check(!gate.WriteByte(at, 1) && memory.Writes == 0);
+    gate = new PortalWriteGate(portal, memory, () => true);
+    Check(!gate.WriteByte(at, 2)); memory.Bytes[at] = 7;
+    Check(!gate.WriteByte(at, 1) && memory.Writes == 0);
+});
+Test("Live write gate repairs and undoes only through current-identity writers", () =>
+{
+    var memory = new FakeMemory(); var at = portal.Targetable + 0x69;
+    memory.Bytes[at] = 0; memory.Bytes[at + 1] = 0;
+    var current = true; var gate = new PortalWriteGate(portal, memory, () => current);
+    var ledger = new PatchLedger();
+    Check(ledger.Maintain(gate, portal, 0x69, 0x6A, _ => true).Changed == 2);
+    Check(ledger.Restore(id => id == portal ? gate : null, _ => current) == 2);
+    Check(memory.Bytes[at] == 0 && memory.Bytes[at + 1] == 0);
+    Check(ledger.Maintain(gate, portal, 0x69, 0x6A, _ => true).Changed == 2);
+    current = false;
+    Check(ledger.Restore(_ => gate, _ => true) == 0 && memory.Bytes[at] == 1);
+});
+Test("Undo skips portals for which no verified writer can be created", () =>
+{
+    var memory = new FakeMemory(); memory.Bytes[address] = 0; var ledger = new PatchLedger();
+    Check(ledger.Apply(memory, portal, offset, _ => true, out _));
+    Check(ledger.Restore(_ => null, _ => true) == 0 && memory.Writes == 1 && ledger.Pending == 0);
+});
+
 Test("Zero changes to one and restores to zero", () =>
 {
     var memory = new FakeMemory(); var ledger = new PatchLedger(); memory.Bytes[address] = 0;
@@ -344,6 +382,63 @@ try
     {
         DebugFlags(); var budget = new ScanBudget(native, () => true, maxReads: 2, milliseconds: 1000);
         Check(!PortalFlagReader.TryRead(budget, identity, debugImage.ToInt64(), 4096, out var flags) && flags == null);
+    });
+    Test("Unknown executable layout never grants a live recovery writer", () =>
+    {
+        Check(!native.RecoveryLayoutVerified);
+        Check(native.CreateRecoveryWriter(identity, () => true) == null);
+    });
+    var loadingPtr = Allocate(0x1000); var inGamePtr = Allocate(0x400); var areaPtr = Allocate(0x800);
+    void ReadyArea()
+    {
+        var player = entityData; player.IsValid = 12; Write(entity, player);
+        Write(loadingPtr, new GameOffsets.Objects.States.AreaLoadingStateOffset { TotalLoadingScreenTimeMs = 77 });
+        Write(inGamePtr, new GameOffsets.Objects.States.InGameStateOffset { AreaInstanceData = areaPtr });
+        var area = new AreaInstanceOffsets { CurrentAreaHash = 123 };
+        area.PlayerInfo.LocalPlayerPtr = entity; Write(areaPtr, area);
+    }
+    Test("Native area fence rejects loading, area replacement, and recycled player IDs", () =>
+    {
+        ReadyArea();
+        Check(PortalAreaFence.TryCapture(native, loadingPtr.ToInt64(), inGamePtr.ToInt64(), out var fence));
+        Check(fence!.IsCurrent(native));
+        Write(loadingPtr, new GameOffsets.Objects.States.AreaLoadingStateOffset { IsLoading = 1, TotalLoadingScreenTimeMs = 77 });
+        Check(!fence.IsCurrent(native));
+        ReadyArea(); Write(loadingPtr, new GameOffsets.Objects.States.AreaLoadingStateOffset { TotalLoadingScreenTimeMs = 78 });
+        Check(!fence.IsCurrent(native));
+        ReadyArea(); Write(inGamePtr, new GameOffsets.Objects.States.InGameStateOffset { AreaInstanceData = areaPtr + 16 });
+        Check(!fence.IsCurrent(native));
+        ReadyArea(); var changed = entityData; changed.IsValid = 12; changed.Id++; Write(entity, changed);
+        Check(!fence.IsCurrent(native));
+    });
+    Test("Loading or invalid player cannot establish a recovery fence", () =>
+    {
+        ReadyArea(); Write(loadingPtr, new GameOffsets.Objects.States.AreaLoadingStateOffset { IsLoading = 1 });
+        Check(!PortalAreaFence.TryCapture(native, loadingPtr.ToInt64(), inGamePtr.ToInt64(), out _));
+        ReadyArea(); var invalid = entityData; invalid.IsValid = 3; Write(entity, invalid);
+        Check(!PortalAreaFence.TryCapture(native, loadingPtr.ToInt64(), inGamePtr.ToInt64(), out _));
+    });
+    void RecoveryPortal()
+    {
+        Metadata("Metadata/MiscellaneousObjects/MapPortal"); DebugFlags();
+        var valid = entityData; valid.IsValid = 12; Write(entity, valid);
+        Marshal.WriteByte(target, 0x6A, 0);
+    }
+    bool ValidateRecovery() => PortalRecoveryLayout.ValidatePortal(native, identity,
+        debugImage.ToInt64() - PortalRecoveryLayout.VtableRva, (int)PortalRecoveryLayout.VtableRva + 4096);
+    Test("Recovery validates the live vector, semantic flag offsets, and portal owner", () =>
+    {
+        RecoveryPortal(); Check(ValidateRecovery());
+        Marshal.WriteIntPtr(vector, 8, target); Check(!ValidateRecovery());
+        RecoveryPortal(); Marshal.WriteIntPtr(gate, 8, details); Check(!ValidateRecovery());
+        RecoveryPortal(); Marshal.WriteByte(target, 0x6A, 5); Check(!ValidateRecovery());
+        RecoveryPortal(); Marshal.WriteByte(target, 0x73, 1); Check(!ValidateRecovery());
+    });
+    Test("A different semantic layout cannot reuse a previously verified recovery profile", () =>
+    {
+        RecoveryPortal(); DebugFlags(0x70, 0x77, 0x75, 0x76);
+        var valid = entityData; valid.IsValid = 12; Write(entity, valid);
+        Check(!ValidateRecovery());
     });
     Test("Disposed handle cannot read or write", () =>
     {

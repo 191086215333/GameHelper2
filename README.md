@@ -19,9 +19,9 @@ this is not a complete translation database for every equipment modifier.
   encounters, selected categories and search/route targets while retaining the route graph.
 - **PreloadAlert**'s timer is off by default, including a one-time update of old settings.
   Empty locked windows stay hidden when the timer is off; preload alerts remain available.
-- **PortalAccess** recovery is suspended after an area-entry crash. This build only performs
-  bounded read-only diagnostics, resets old enabled recovery settings and blocks game writes.
-  Read-only diagnostics identify four flag offsets from the client's own debug labels; recovery remains unverified. See [details](Plugins/PortalAccess/README.md).
+- **PortalAccess** offers opt-in recovery restricted to two fields in a verified client layout.
+  Each write checks portal identity and native area/loading state; unknown layouts stay read-only.
+  Visual restoration and server re-entry await user testing. See [details](Plugins/PortalAccess/README.md).
 
 Chinese guides: [简体中文](README.zh-CN.local.md) · [繁體中文](README.zh-Hant.local.md).
 Reproducible offline checks and rendering tools are documented in [Tests/README.md](Tests/README.md).

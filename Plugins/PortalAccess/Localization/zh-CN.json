@@ -1,9 +1,9 @@
 {
-  "plugin.description": "传送门只读诊断；进图崩溃后已暂停交互恢复。",
-  "settings.explanation": "检查客户端中仍存在的传送门实体。当前版本暂不提供交互恢复。",
-  "settings.experimental": "进图崩溃后已暂停恢复功能。只读状态检查不代表传送门恢复已验证。",
+  "plugin.description": "按已验证的客户端结构恢复残留传送门的交互，附带只读诊断。",
+  "settings.explanation": "恢复当前区域仍然存在、但已关闭的传送门的交互与高亮。",
+  "settings.experimental": "仅支持通过验证的客户端版本。无法重新创建已被删除的门，也不能保证目标地图仍允许进入。",
   "settings.restore": "恢复传送门交互",
-  "settings.observe": "此版本仅读取传送门数据；即使旧配置打开了恢复，也不会修改或还原游戏内存。",
+  "settings.observe": "关闭恢复时仅采集只读数据。关闭开关会尝试撤销本插件的修改，仅处理仍在同一区域且身份校验通过的门。",
   "settings.interval": "检查间隔（毫秒）",
   "settings.delay": "切换区域后等待（毫秒）",
   "settings.export": "导出传送门诊断",
@@ -13,10 +13,10 @@
   "status.error": "无法访问游戏进程（代码 {0}）。请确认两个程序的运行权限一致。",
   "status.settling": "等待区域加载稳定",
   "status.access": "无法打开游戏进程",
-  "status.observe": "只读诊断；交互恢复已暂停",
+  "status.observe": "只读诊断；恢复开关已关闭",
   "status.empty": "附近未读取到传送门实体",
-  "status.active": "此版本暂不提供交互恢复",
-  "status.failed": "只读采样不完整，或部分实体未通过身份检查",
+  "status.active": "客户端结构验证通过，交互恢复已开启",
+  "status.failed": "部分检查未完成或未通过，已跳过无法验证的门",
   "status.exception": "采样出错并已停止；请查看 Error.log",
   "status.waiting": "等待游戏启动或区域加载完成",
   "table.portal": "传送门编号",
@@ -28,5 +28,6 @@
   "status.scan_incomplete": "采样已达到时间或读取上限，或区域发生变化；部分传送门可能未被读取。",
   "table.hidden": "对玩家隐藏",
   "table.quest": "任务条件",
-  "table.item": "物品条件"
+  "table.item": "物品条件",
+  "status.unsupported": "无法识别客户端结构，已阻止全部恢复写入"
 }

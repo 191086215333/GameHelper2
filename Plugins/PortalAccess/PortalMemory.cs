@@ -15,6 +15,9 @@ namespace PortalAccess
     internal sealed class PortalMemory : IRemoteMemory, IDisposable
     {
         private SafeProcessHandle? handle;
+        private SafeProcessHandle? recoveryHandle;
+        private bool? recoveryLayout;
+        private uint attachedPid;
         private bool writable;
         public string Session { get; private set; } = string.Empty;
         public int LastError { get; private set; }
@@ -28,8 +31,8 @@ namespace PortalAccess
 
         public bool Attach(uint pid, bool write)
         {
-            // The current game layout is unverified after an access-violation crash.
-            // Keep writes available only to offline tests against their own process.
+            // Arbitrary writes remain restricted to own-process fixtures. Live recovery
+            // uses CreateRecoveryWriter, which can touch only two validated flag bytes.
             if (write && pid != (uint)Environment.ProcessId)
             {
                 this.Dispose();
@@ -51,6 +54,7 @@ namespace PortalAccess
                     return false;
                 }
                 this.Session = session;
+                this.attachedPid = pid;
                 this.ImageStart = process.MainModule?.BaseAddress.ToInt64() ?? 0;
                 this.ImageSize = process.MainModule?.ModuleMemorySize ?? 0;
                 this.writable = write;
@@ -98,6 +102,38 @@ namespace PortalAccess
             return success;
         }
 
+        internal bool RecoveryLayoutVerified => this.recoveryLayout ??=
+            PortalRecoveryLayout.MatchesImage(this, this.ImageStart, this.ImageSize);
+
+        internal IByteMemory? CreateRecoveryWriter(PortalIdentity portal, Func<bool> areaCurrent)
+        {
+            var session = this.Session;
+            bool Validate() => this.Session == session && this.IsAlive() && areaCurrent() && this.RecoveryLayoutVerified &&
+                PortalRecoveryLayout.ValidatePortal(this, portal, this.ImageStart, this.ImageSize) &&
+                this.Session == session && this.IsAlive() && areaCurrent();
+            if (!Validate()) return null;
+            if (this.recoveryHandle is not { IsInvalid: false, IsClosed: false })
+            {
+                this.recoveryHandle?.Dispose();
+                this.recoveryHandle = OpenProcess(0x1000u | 0x10u | 0x28u, false, this.attachedPid);
+                if (this.recoveryHandle.IsInvalid) { this.LastError = Marshal.GetLastWin32Error(); return null; }
+            }
+            return new PortalWriteGate(portal, new RecoveryBytes(this), Validate);
+        }
+
+        // Only exposed through the field/identity/area guard above, never returned directly.
+        private sealed class RecoveryBytes(PortalMemory owner) : IByteMemory
+        {
+            public bool ReadByte(long address, out byte value) => owner.ReadByte(address, out value);
+            public bool WriteByte(long address, byte value)
+            {
+                if (owner.recoveryHandle is not { IsInvalid: false, IsClosed: false } || !owner.IsAlive()) return false;
+                var ok = WriteProcessMemory(owner.recoveryHandle, (IntPtr)address, new[] { value }, 1, out var count) && count == 1;
+                if (!ok) owner.LastError = Marshal.GetLastWin32Error();
+                return ok;
+            }
+        }
+
         public bool Validate(PortalIdentity portal)
         {
             // This validator is for the offline patch-ledger fixture, not live flags.
@@ -135,6 +171,10 @@ namespace PortalAccess
 
         public void Dispose()
         {
+            this.recoveryHandle?.Dispose();
+            this.recoveryHandle = null;
+            this.recoveryLayout = null;
+            this.attachedPid = 0;
             this.handle?.Dispose();
             this.handle = null;
             this.Session = string.Empty;

@@ -1,29 +1,11 @@
-# PortalAccess (recovery paused)
+# PortalAccess
 
-After an area-entry access-violation crash on 2026-10-05, this build suspends interaction
-recovery. F12 → Maps & earnings → Portal interaction recovery now offers **read-only
-diagnostics**. Old `RestoreInteraction: true` settings are reset and the switch is disabled.
-The plugin never opens a writable game handle and performs no undo writes on shutdown.
-The low-level writable path is restricted to the current process for offline tests only.
+F12 → Maps & earnings → Portal interaction recovery offers an opt-in switch to restore targeting and highlighting on closed portal entities still resident in the current area. New configurations default to read-only; existing explicit preferences are preserved.
 
-The crash dump contains an invalid `0x10100` pointer, consistent with the previous two
-one-byte writes. Read-only inspection of the same game image identifies the Targetable
-destructor in that crash stack and its vector at 0x50: the inherited 0x51/0x52 fields fall
-inside that vector's pointer. This strongly identifies a layout error; the dump omits
-the actual heap object. Do not use the framework's inherited field offsets for writes.
+Recovery requires the verified 2026-10-05 client instruction profile. Four instruction-block hashes, the component vtable and the client's named diagnostic flags must all match. Only Targetable +0x69 and Highlightable +0x6A are writable. The inherited +0x51/+0x52 locations overlap a vector pointer and are never used for game writes. Unknown layouts remain read-only, even with the switch enabled. See [layout evidence](DIAGNOSTIC_LAYOUT.md).
 
-Diagnostics identify four boolean offsets through the current Targetable debug method's
-UTF-16 labels: Targetable, Hidden from Player, Meets Quest State, Meets Item Requirements.
-The method and labels must lie within the attached game's executable image, labels must
-be distinct, values must be boolean, and the entity/component identity must match before
-and after reading. Unknown methods produce no flag values. This validates read-only field
-interpretation, not highlighting, model rendering or server re-entry. Recovery stays paused.
+Each write checks native loading, area pointer/hash, player identity and portal component ownership again. Only valid supported portal objects with a Portal component and satisfied quest/item conditions qualify. Each entity is repaired once per area, matching the reference behavior. Switching off attempts to undo this plugin's changes to the same current entities; area/session changes discard stale addresses without writing. Generic writable attachments remain restricted to own-process offline fixtures.
 
-Discovery reads native awake/sleeping maps and checks retained portal identities. One sample
-shares a 15 ms / 4,000-read budget, with at most 2,000 nodes per map and 128 retained identities.
-Checks stop when loading/process state changes. A limit or failed read produces an incomplete
-sample, never a fabricated zero. Large maps may have portals missing from diagnostics.
+Discovery shares a 15 ms / 4,000-read budget, with at most 2,000 nodes per map and 128 retained identities. Recovery has a separate 40 ms deadline checked between validations/writes; an in-progress validation can finish after the deadline but cannot write afterwards. Incomplete samples are reported. Diagnostics in config/ update every 10 seconds and include the matched profile and modified-field count.
 
-Settings and diagnostic exports live in `config/`; active samples refresh the export every
-10 seconds. No proprietary executable or authentication code is bundled. Offline tests use
-fake memory and their own allocations, never the game; see [tests](../../Tests/README.md).
+The profile and current closed-portal identity were checked read-only in a running client. Appearance and entry await user testing. Flag readback is not visual or server validation. Deleted entities or expired/rejected destinations cannot be recreated. No proprietary executable or authentication code is bundled. [Offline tests](../../Tests/README.md) never write to the game.

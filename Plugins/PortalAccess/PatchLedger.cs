@@ -59,11 +59,17 @@ namespace PortalAccess
         }
 
         public int Restore(IByteMemory memory, Func<PortalIdentity, bool> validate)
+            => this.Restore(_ => memory, validate);
+
+        public int Restore(Func<PortalIdentity, IByteMemory?> writerFor, Func<PortalIdentity, bool> validate)
         {
             var restored = 0;
             foreach (var (key, original) in this.originals.ToArray())
             {
                 var address = key.Portal.Targetable + key.Offset;
+                if (!validate(key.Portal)) continue;
+                var memory = writerFor(key.Portal);
+                if (memory == null) continue;
                 // Do not overwrite a newer game value or restore a recycled entity address.
                 if (validate(key.Portal) && memory.ReadByte(address, out var current) && current == 1 &&
                     validate(key.Portal) && memory.WriteByte(address, original) &&

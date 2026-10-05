@@ -17,6 +17,10 @@ namespace PortalAccess
     public sealed class PortalAccessCore : PCore<PortalAccessSettings>
     {
         private readonly PortalMemory memory = new();
+        private readonly PatchLedger ledger = new();
+        private int modifiedFields;
+        private int failedAttempts;
+        private int lastUndo;
         private readonly List<Observation> observations = new();
         private string areaKey = string.Empty;
         private string processSession = string.Empty;
@@ -46,44 +50,38 @@ namespace PortalAccess
             }
             this.Settings.RefreshIntervalMs = Math.Clamp(this.Settings.RefreshIntervalMs, 500, 10000);
             this.Settings.AreaDelayMs = Math.Clamp(this.Settings.AreaDelayMs, 500, 10000);
-            // Ignore old configs that enabled writes. Observation is the only supported
-            // mode until the current client layout has been independently verified.
-            if (this.Settings.RestoreInteraction)
-            {
-                this.Settings.RestoreInteraction = false;
-                this.SaveSettings();
-            }
             this.ResetArea();
         }
 
         public override void OnDisable()
         {
-            try { this.SaveSettings(); }
+            try { this.UndoCurrentArea(); this.SaveSettings(); }
             finally { this.memory.Dispose(); this.ResetArea(); }
         }
 
         public override void SaveSettings()
         {
-            this.Settings.RestoreInteraction = false;
             Directory.CreateDirectory(Path.GetDirectoryName(this.SettingsPath)!);
             File.WriteAllText(this.SettingsPath, JsonConvert.SerializeObject(this.Settings, Formatting.Indented));
         }
 
         public override void DrawSettings()
         {
-            ImGui.TextWrapped(this.PluginText.T("settings.explanation", "Inspect portal entities still present in the client. Interaction recovery is currently unavailable."));
-            ImGui.TextWrapped(this.PluginText.T("settings.experimental", "Recovery is paused after an area-entry crash. Read-only flag checks do not verify portal restoration."));
-            this.Settings.RestoreInteraction = false;
-            ImGui.BeginDisabled();
-            ImGui.Checkbox(this.PluginText.Label("settings.restore", "Restore portal interaction", "PortalRestore"), ref this.Settings.RestoreInteraction);
-            ImGui.EndDisabled();
-            ImGui.TextWrapped(this.PluginText.T("settings.observe", "This build only reads portal data. It does not modify or restore game memory, even with an older enabled configuration."));
+            ImGui.TextWrapped(this.PluginText.T("settings.explanation", "Restore interaction and highlighting on closed portal entities that still exist in the current area."));
+            ImGui.TextWrapped(this.PluginText.T("settings.experimental", "Only verified client layouts can be modified. Recovery cannot recreate a deleted portal or guarantee that its destination still accepts entry."));
+            if (ImGui.Checkbox(this.PluginText.Label("settings.restore", "Restore portal interaction", "PortalRestore"), ref this.Settings.RestoreInteraction))
+            {
+                if (!this.Settings.RestoreInteraction) this.UndoCurrentArea();
+                this.nextSample = 0;
+                this.SaveSettings();
+            }
+            ImGui.TextWrapped(this.PluginText.T("settings.observe", "With recovery off, this plugin only reads portal data. Turning it off restores this plugin's changes only while the same area and portal identities remain valid."));
             var refreshChanged = ImGui.SliderInt(this.PluginText.Label("settings.interval", "Refresh interval (ms)", "PortalInterval"), ref this.Settings.RefreshIntervalMs, 500, 10000);
             var delayChanged = ImGui.SliderInt(this.PluginText.Label("settings.delay", "Wait after area changes (ms)", "PortalDelay"), ref this.Settings.AreaDelayMs, 500, 10000);
             if (refreshChanged || delayChanged) this.SaveSettings();
             ImGui.Separator();
             ImGui.TextWrapped(this.PluginText.F("status.line", "Status: {0}", this.StatusText()));
-            ImGui.TextWrapped(this.PluginText.F("status.counts", "Portals: {0} | Modified fields: {1} | Failed attempts: {2} | Last undo: {3}", this.observations.Count, 0, 0, 0));
+            ImGui.TextWrapped(this.PluginText.F("status.counts", "Portals: {0} | Modified fields: {1} | Failed attempts: {2} | Last undo: {3}", this.observations.Count, this.modifiedFields, this.failedAttempts, this.lastUndo));
             if (this.status == "access")
                 ImGui.TextWrapped(this.PluginText.F("status.error", "Process access failed (code {0}). Check that both applications run with matching privileges.", this.memory.LastError));
             if (ImGui.Button(this.PluginText.Label("settings.export", "Export portal diagnostics", "PortalExport")))
@@ -119,9 +117,11 @@ namespace PortalAccess
         {
             "settling" => this.PluginText.T("status.settling", "Waiting for the area to stabilize"),
             "access" => this.PluginText.T("status.access", "Cannot open the game process"),
-            "observe" => this.PluginText.T("status.observe", "Read-only diagnostics; interaction recovery is paused"),
+            "observe" => this.PluginText.T("status.observe", "Read-only diagnostics; recovery is switched off"),
+            "active" => this.PluginText.T("status.active", "Recovery enabled for the verified client layout"),
+            "unsupported" => this.PluginText.T("status.unsupported", "Client layout not recognized; all recovery writes are blocked"),
             "empty" => this.PluginText.T("status.empty", "No portal entities found nearby"),
-            "failed" => this.PluginText.T("status.failed", "The read-only sample is incomplete or some entities failed identity checks"),
+            "failed" => this.PluginText.T("status.failed", "Some checks were incomplete or rejected; unverified portals were skipped"),
             "error" => this.PluginText.T("status.exception", "Sampling stopped after an error; see Error.log"),
             _ => this.PluginText.T("status.waiting", "Waiting for the game or an area to finish loading"),
         };
@@ -177,17 +177,73 @@ namespace PortalAccess
             }
             if (this.processSession != this.memory.Session)
             {
+                this.ledger.Clear();
                 this.known.Clear();
                 this.processSession = this.memory.Session;
             }
             this.Collect();
             var errors = this.observations.Count(x => !x.Valid) + (this.scanComplete ? 0 : 1);
             this.status = errors > 0 ? "failed" : this.observations.Count == 0 ? "empty" : "observe";
+            if (this.Settings.RestoreInteraction)
+            {
+                if (!this.memory.RecoveryLayoutVerified) this.status = "unsupported";
+                else this.RecoverCurrentArea();
+            }
             if (now - this.lastDiagnosticAt >= 10000)
             {
                 this.SaveDiagnostics();
                 this.lastDiagnosticAt = now;
             }
+        }
+
+        private void RecoverCurrentArea()
+        {
+            if (!this.TryRecoveryFence(out var fence)) return;
+            var key = this.areaKey;
+            var deadline = Environment.TickCount64 + 40;
+            bool Ready() => Environment.TickCount64 <= deadline && this.areaKey == key && key == this.GetAreaKey() &&
+                this.processSession == this.memory.Session && fence!.IsCurrent(this.memory);
+            var failures = 0;
+            foreach (var observation in this.observations)
+            {
+                if (!Ready()) break;
+                var identity = observation.Identity;
+                var writer = this.memory.CreateRecoveryWriter(identity, Ready);
+                if (writer == null) { failures++; continue; }
+                var result = this.ledger.Maintain(writer, identity, PortalRecoveryLayout.TargetOffset, PortalRecoveryLayout.HighlightOffset, _ => Ready());
+                this.modifiedFields += result.Changed;
+                failures += result.Failed;
+            }
+            this.failedAttempts += failures;
+            if (failures > 0) this.status = "failed";
+            else if (this.observations.Count > 0) this.status = "active";
+        }
+
+        private bool TryRecoveryFence(out PortalAreaFence? fence)
+        {
+            fence = null;
+            return this.areaKey.Length > 0 && this.areaKey == this.GetAreaKey() && this.processSession == this.memory.Session &&
+                this.memory.IsAlive() && this.memory.RecoveryLayoutVerified &&
+                PortalAreaFence.TryCapture(this.memory, Core.States.AreaLoading.Address.ToInt64(),
+                    Core.States.InGameStateObject.Address.ToInt64(), out fence) &&
+                fence!.Area == Core.States.InGameStateObject.CurrentAreaInstance.Address.ToInt64() &&
+                fence.Hash.ToString("X") == Core.States.InGameStateObject.CurrentAreaInstance.AreaHash &&
+                fence.Player == Core.States.InGameStateObject.CurrentAreaInstance.Player.Address.ToInt64() &&
+                fence.PlayerId == Core.States.InGameStateObject.CurrentAreaInstance.Player.Id;
+        }
+
+        private void UndoCurrentArea()
+        {
+            this.lastUndo = 0;
+            if (this.ledger.Pending > 0 && this.TryRecoveryFence(out var fence))
+            {
+                var key = this.areaKey;
+                var deadline = Environment.TickCount64 + 40;
+                bool Ready() => Environment.TickCount64 <= deadline && key == this.GetAreaKey() &&
+                    this.processSession == this.memory.Session && fence!.IsCurrent(this.memory);
+                this.lastUndo = this.ledger.Restore(id => this.memory.CreateRecoveryWriter(id, Ready), _ => Ready());
+            }
+            this.ledger.Clear();
         }
 
         private void Collect()
@@ -243,10 +299,12 @@ namespace PortalAccess
                 File.WriteAllText(Path.Combine(this.DllDirectory, "config", "portal-diagnostics.json"),
                     JsonConvert.SerializeObject(new { CapturedUtc = DateTime.UtcNow, Status = this.status,
                         Area = this.areaKey, this.Settings.RestoreInteraction,
-                        Mode = "read-only-crash-quarantine", WritesBlocked = true,
+                        Mode = this.Settings.RestoreInteraction ? "verified-two-flag-recovery" : "read-only",
+                        WritesBlocked = !this.Settings.RestoreInteraction || !this.memory.RecoveryLayoutVerified,
+                        RecoveryProfile = this.memory.RecoveryLayoutVerified ? PortalRecoveryLayout.Profile : null,
                         FlagOffsetsVerified = this.observations.Count > 0 && this.observations.All(x => x.VerifiedFlags != null),
                         FlagVerification = "client-debug-labels-read-only", RecoveryVerified = false,
-                        ModifiedFields = 0, FailedAttempts = 0, LastUndo = 0,
+                        ModifiedFields = this.modifiedFields, FailedAttempts = this.failedAttempts, LastUndo = this.lastUndo,
                         Collector = "native-bounded-read-only-v3", AwakeVisited = this.awakeVisited,
                         SleepingVisited = this.sleepingVisited, ScanComplete = this.scanComplete,
                         Portals = this.observations }, Formatting.Indented));
@@ -257,6 +315,10 @@ namespace PortalAccess
 
         private void ResetArea()
         {
+            // Never write undo bytes through an address from a previous area/session.
+            this.ledger.Clear();
+            this.modifiedFields = 0;
+            this.failedAttempts = 0;
             this.areaKey = string.Empty;
             this.known.Clear();
             this.observations.Clear();

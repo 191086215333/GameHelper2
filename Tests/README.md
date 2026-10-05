@@ -18,9 +18,10 @@ process, never the game. LootTrackerTests covers aggregation, interruption, pers
 CSV and price-cache validity. LocalizationSmoke exercises both Chinese locales, Ritual terms,
 language switching and stable ImGui IDs. The Python check requires no extra packages.
 
-PortalAccess recovery is currently suspended. Its tests also cover rejecting foreign-process
-writes and bounding/cancelling scans, plus client debug-label flag discovery and rejected
-layouts (44 checks). The layout evidence is documented in
+PortalAccess tests cover rejecting arbitrary foreign-process writes, bounding/cancelling scans,
+client debug-label flag discovery, a two-field write gate, native area/loading/player fences,
+unknown profiles, and identity-validated undo (53 checks). They never write to the game.
+The layout evidence is documented in
 [PortalAccess](../Plugins/PortalAccess/DIAGNOSTIC_LAYOUT.md). OverlayShutdownSmoke creates and closes the actual
 overlay window using isolated settings and no plugins. Run it with the game closed; it checks
 that the HWND is destroyed before the render thread exits and repeated disposal is harmless.

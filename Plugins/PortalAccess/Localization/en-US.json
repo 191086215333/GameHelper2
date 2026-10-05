@@ -1,9 +1,9 @@
 {
-  "plugin.description": "Read-only portal diagnostics; interaction recovery is paused after a crash.",
-  "settings.explanation": "Inspect portal entities still present in the client. Interaction recovery is currently unavailable.",
-  "settings.experimental": "Recovery is paused after an area-entry crash. Read-only flag checks do not verify portal restoration.",
+  "plugin.description": "Restore interaction on resident closed portals using a verified client layout; includes read-only diagnostics.",
+  "settings.explanation": "Restore interaction and highlighting on closed portal entities that still exist in the current area.",
+  "settings.experimental": "Only verified client layouts can be modified. Recovery cannot recreate a deleted portal or guarantee that its destination still accepts entry.",
   "settings.restore": "Restore portal interaction",
-  "settings.observe": "This build only reads portal data. It does not modify or restore game memory, even with an older enabled configuration.",
+  "settings.observe": "With recovery off, this plugin only reads portal data. Turning it off restores this plugin's changes only while the same area and portal identities remain valid.",
   "settings.interval": "Refresh interval (ms)",
   "settings.delay": "Wait after area changes (ms)",
   "settings.export": "Export portal diagnostics",
@@ -13,10 +13,10 @@
   "status.error": "Process access failed (code {0}). Check that both applications run with matching privileges.",
   "status.settling": "Waiting for the area to stabilize",
   "status.access": "Cannot open the game process",
-  "status.observe": "Read-only diagnostics; interaction recovery is paused",
+  "status.observe": "Read-only diagnostics; recovery is switched off",
   "status.empty": "No portal entities found nearby",
-  "status.active": "Interaction recovery is unavailable in this build",
-  "status.failed": "The read-only sample is incomplete or some entities failed identity checks",
+  "status.active": "Recovery enabled for the verified client layout",
+  "status.failed": "Some checks were incomplete or rejected; unverified portals were skipped",
   "status.exception": "Sampling stopped after an error; see Error.log",
   "status.waiting": "Waiting for the game or an area to finish loading",
   "table.portal": "Portal ID",
@@ -28,5 +28,6 @@
   "status.scan_incomplete": "The sample ended at its time/read limit or the area changed. Some portals may be missing.",
   "table.hidden": "Hidden from player",
   "table.quest": "Quest requirements",
-  "table.item": "Item requirements"
+  "table.item": "Item requirements",
+  "status.unsupported": "Client layout not recognized; all recovery writes are blocked"
 }

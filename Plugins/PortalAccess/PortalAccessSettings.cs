@@ -7,7 +7,7 @@ namespace PortalAccess
 
     public sealed class PortalAccessSettings : IPSettings
     {
-        // Retained for config compatibility. This build forces observation-only mode.
+        // Recovery requires a verified client profile even when explicitly enabled.
         public bool RestoreInteraction;
         public int RefreshIntervalMs = 1000;
         public int AreaDelayMs = 1500;

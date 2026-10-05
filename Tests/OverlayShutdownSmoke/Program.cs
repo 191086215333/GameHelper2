@@ -24,11 +24,11 @@ portalPlugin.DrawUI();
 portalPlugin.OnDisable();
 using (var config = JsonDocument.Parse(File.ReadAllText(portalSettings)))
 {
-    if (config.RootElement.GetProperty("RestoreInteraction").GetBoolean() ||
+    if (!config.RootElement.GetProperty("RestoreInteraction").GetBoolean() ||
         portalPlugin.Settings.RefreshIntervalMs != 500 || portalPlugin.Settings.AreaDelayMs != 10000)
-        throw new Exception("Old enabled recovery settings were not reset");
+        throw new Exception("Explicit recovery preference or clamped limits were not preserved");
 }
-Console.WriteLine("PASS old enabled portal configuration resets to read-only, samples offline and disables safely");
+Console.WriteLine("PASS explicit recovery preference persists, samples offline and disables safely without a game");
 var overlay = (GameOverlay)Activator.CreateInstance(typeof(GameOverlay), BindingFlags.Instance | BindingFlags.NonPublic,
     null, new object[] { "GameHelper shutdown check" }, null)!;
 typeof(Core).GetProperty(nameof(Core.Overlay))!.SetValue(null, overlay);
