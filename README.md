@@ -15,6 +15,10 @@ this is not a complete translation database for every equipment modifier.
 - **LootTracker** records active area time and observed positive changes in backpack currency,
   with a compact HUD, session history and CSV exports. Values use LootValue's current cache.
   See [tracking behavior and limitations](Plugins/LootTracker/README.md).
+- **Atlas2** offers "Hide ordinary map labels" under Atlas Settings, preserving special
+  encounters, selected categories and search/route targets while retaining the route graph.
+- **PreloadAlert**'s timer is off by default, including a one-time update of old settings.
+  Empty locked windows stay hidden when the timer is off; preload alerts remain available.
 - **PortalAccess** recovery is suspended after an area-entry crash. This build only performs
   bounded read-only diagnostics, resets old enabled recovery settings and blocks game writes.
   Read-only diagnostics identify four flag offsets from the client's own debug labels; recovery remains unverified. See [details](Plugins/PortalAccess/README.md).

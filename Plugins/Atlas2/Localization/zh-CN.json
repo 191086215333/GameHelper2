@@ -8,6 +8,8 @@
   "ui.atlas_settings": "世界地图设置",
   "ui.hide_completed_maps": "隐藏已完成的地图",
   "ui.hide_not_accessible_maps": "隐藏尚未可进入的地图",
+  "ui.hide_normal_map_labels": "隐藏普通地图标识",
+  "ui.hide_normal_map_labels.tooltip": "隐藏普通地图的名称和附加标识，保留特殊事件、传奇或特殊地图、已选分类和搜索／导航目标。游戏原生节点与导航连线继续显示。",
   "ui.show_map_counts": "显示地图计数",
   "ui.draw_connected_node_and_badge_counts_under_each_map_label_on_the_atlas": "在世界地图的地图名称下方显示相连节点数与标记数。",
   "ui.show_content": "显示地图内容",

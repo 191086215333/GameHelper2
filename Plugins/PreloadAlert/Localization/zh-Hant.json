@@ -32,6 +32,7 @@
   "settings.lock_window": "鎖定/解鎖預載視窗",
   "settings.lock_window.tooltip": "也可以雙擊預載視窗進行鎖定。但只能從這裡解鎖。",
   "settings.show_time_since_last_map": "顯示距上次打開地圖的時間",
+  "settings.show_time_since_last_map.tooltip": "顯示距離上次區域預載入更新的秒數，不是有效刷圖時長。預設關閉。",
   "window.background_color": "背景顏色",
   "window.dummy_preload": "示例預載 {0}",
   "window.edit_background_color": "編輯背景顏色：",

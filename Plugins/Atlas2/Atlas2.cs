@@ -167,6 +167,9 @@ namespace Atlas2
             ImGui.SeparatorText(global::GameHelper.Localization.PluginStrings.For("Atlas2").T("ui.atlas_settings", "Atlas Settings"));
             ImGui.Checkbox(global::GameHelper.Localization.PluginStrings.For("Atlas2").Title("ui.hide_completed_maps", "Hide Completed Maps", "Hide Completed Maps"), ref Settings.HideCompletedMaps);
             ImGui.Checkbox(global::GameHelper.Localization.PluginStrings.For("Atlas2").Title("ui.hide_not_accessible_maps", "Hide Not Accessible Maps", "Hide Not Accessible Maps"), ref Settings.HideNotAccessibleMaps);
+            if (ImGui.Checkbox(global::GameHelper.Localization.PluginStrings.For("Atlas2").Title("ui.hide_normal_map_labels", "Hide ordinary map labels", "HideNormalMapLabels"), ref Settings.HideNormalMapLabels))
+                SaveSettings();
+            ImGuiHelper.ToolTip(global::GameHelper.Localization.PluginStrings.For("Atlas2").T("ui.hide_normal_map_labels.tooltip", "Hide labels and extra markers on ordinary maps. Keep special encounters, unique/tagged maps, selected categories and search/route targets. Native nodes and route connections stay visible."));
             ImGui.Checkbox(global::GameHelper.Localization.PluginStrings.For("Atlas2").Title("ui.show_map_counts", "Show Map Counts", "Show Map Counts"), ref Settings.ShowMapCounts);
             ImGuiHelper.ToolTip(global::GameHelper.Localization.PluginStrings.For("Atlas2").T("ui.draw_connected_node_and_badge_counts_under_each_map_label_on_the_atlas", "Draw connected-node and badge counts under each map label on the Atlas."));
             ImGui.Checkbox(global::GameHelper.Localization.PluginStrings.For("Atlas2").Title("ui.show_content", "Show Content", "Show Content"), ref Settings.ShowContent);
@@ -542,6 +545,15 @@ namespace Atlas2
                     if (Settings.HideNotAccessibleMaps && notAccessible && !routeTarget)
                         continue;
 
+                    var group = Settings.MapGroups.FirstOrDefault(g => MatchesCategory(g, nd, mapName, doSearch, matchesSearch));
+                    // Keep all nodes in the routing graph above. Only plain overlay
+                    // labels are filtered; special/unknown content and explicitly
+                    // selected categories/search targets remain visible.
+                    if (Settings.HideNormalMapLabels && !routeTarget && !(doSearch && matchesSearch) && group == null &&
+                        string.Equals(nd.Type, "normal", StringComparison.OrdinalIgnoreCase) &&
+                        nd.Tags.Count == 0 && nd.BadgeCount == 0 && nd.ContentDisplayAll.Count == 0)
+                        continue;
+
                     var nodeUi = atlasUi[nd.Index];
                     if (nodeUi == null)
                         continue;
@@ -593,8 +605,6 @@ namespace Atlas2
 
                     if (!screenBounds.IntersectsWith(new RectangleF(bgPos.X, bgPos.Y, bgSize.X, bgSize.Y)))
                         continue;
-
-                    var group = Settings.MapGroups.FirstOrDefault(g => MatchesCategory(g, nd, mapName, doSearch, matchesSearch));
 
                     var backgroundColor = group?.BackgroundColor ?? Settings.DefaultBackgroundColor;
                     var fontColor = group?.FontColor ?? Settings.DefaultFontColor;

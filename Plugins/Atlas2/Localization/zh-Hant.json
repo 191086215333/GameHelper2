@@ -8,6 +8,8 @@
   "ui.atlas_settings": "輿圖設定",
   "ui.hide_completed_maps": "隱藏已完成的地圖",
   "ui.hide_not_accessible_maps": "隱藏尚未可進入的地圖",
+  "ui.hide_normal_map_labels": "隱藏普通地圖標識",
+  "ui.hide_normal_map_labels.tooltip": "隱藏普通地圖的名稱和附加標識，保留特殊事件、傳奇或特殊地圖、已選分類和搜尋／導航目標。遊戲原生節點與導航連線繼續顯示。",
   "ui.show_map_counts": "顯示地圖計數",
   "ui.draw_connected_node_and_badge_counts_under_each_map_label_on_the_atlas": "在輿圖的地圖名稱下方顯示相連節點數與標記數。",
   "ui.show_content": "顯示地圖內容",

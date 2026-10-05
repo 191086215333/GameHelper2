@@ -8,6 +8,8 @@
   "ui.atlas_settings": "Atlas Settings",
   "ui.hide_completed_maps": "Hide Completed Maps",
   "ui.hide_not_accessible_maps": "Hide Not Accessible Maps",
+  "ui.hide_normal_map_labels": "Hide ordinary map labels",
+  "ui.hide_normal_map_labels.tooltip": "Hide labels and extra markers on ordinary maps. Keep special encounters, unique/tagged maps, selected categories and search/route targets. Native nodes and route connections stay visible.",
   "ui.show_map_counts": "Show Map Counts",
   "ui.draw_connected_node_and_badge_counts_under_each_map_label_on_the_atlas": "Draw connected-node and badge counts under each map label on the Atlas.",
   "ui.show_content": "Show Content",
