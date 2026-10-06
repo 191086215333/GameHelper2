@@ -151,9 +151,11 @@ Test("A partially failed portal remains eligible for a later repair", () =>
 
 // Use only this test process's allocated memory. Never attach to the game for these tests.
 var allocations = new List<IntPtr>();
+var allocationSizes = new Dictionary<long, int>();
 IntPtr Allocate(int count)
 {
-    var p = Marshal.AllocHGlobal(count); allocations.Add(p); Marshal.Copy(new byte[count], 0, p, count); return p;
+    var p = Marshal.AllocHGlobal(count); allocations.Add(p); allocationSizes.Add(p.ToInt64(), count);
+    Marshal.Copy(new byte[count], 0, p, count); return p;
 }
 try
 {
@@ -242,8 +244,18 @@ try
     void Write<T>(IntPtr destination, T data) where T : unmanaged
     {
         var bytes = MemoryMarshal.AsBytes(new[] { data }.AsSpan()).ToArray();
+        var address = destination.ToInt64();
+        if (!allocationSizes.Any(block => address >= block.Key && address - block.Key <= block.Value - bytes.Length))
+            throw new InvalidOperationException("Fixture write exceeds its owned allocation");
         Marshal.Copy(bytes, 0, destination, bytes.Length);
     }
+    Test("Native fixture refuses a struct write larger than its allocation", () =>
+    {
+        var small = Allocate(16); var rejected = false;
+        try { Write(small, new AreaInstanceOffsets()); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected);
+    });
     void Metadata(string path, string secondName = "Portal", uint entityId = 123)
     {
         Reset();
@@ -479,7 +491,9 @@ try
         Check(!native.RecoveryLayoutVerified);
         Check(native.CreateRecoveryWriter(identity, () => true) == null);
     });
-    var loadingPtr = Allocate(0x1000); var inGamePtr = Allocate(0x400); var areaPtr = Allocate(0x800);
+    var loadingPtr = Allocate(System.Runtime.CompilerServices.Unsafe.SizeOf<GameOffsets.Objects.States.AreaLoadingStateOffset>());
+    var inGamePtr = Allocate(System.Runtime.CompilerServices.Unsafe.SizeOf<GameOffsets.Objects.States.InGameStateOffset>());
+    var areaPtr = Allocate(System.Runtime.CompilerServices.Unsafe.SizeOf<AreaInstanceOffsets>());
     void ReadyArea()
     {
         var player = entityData; player.IsValid = 12; Write(entity, player);
@@ -516,7 +530,7 @@ try
         Marshal.WriteByte(target, 0x6A, 0);
     }
     bool ValidateRecovery() => PortalRecoveryLayout.ValidatePortal(native, identity,
-        debugImage.ToInt64() - PortalRecoveryLayout.VtableRva, (int)PortalRecoveryLayout.VtableRva + 4096);
+        debugImage.ToInt64() - PortalRecoveryLayout.October5.VtableRva, (int)PortalRecoveryLayout.October5.VtableRva + 4096, PortalRecoveryLayout.October5);
     Test("Recovery validates the live vector, semantic flag offsets, and portal owner", () =>
     {
         RecoveryPortal(); Check(ValidateRecovery());
@@ -530,6 +544,70 @@ try
         RecoveryPortal(); DebugFlags(0x70, 0x77, 0x75, 0x76);
         var valid = entityData; valid.IsValid = 12; Write(entity, valid);
         Check(!ValidateRecovery());
+    });
+    Test("Portal validation uses the vtable belonging to the selected client profile", () =>
+    {
+        RecoveryPortal();
+        var image = debugImage.ToInt64() - PortalRecoveryLayout.October6.VtableRva;
+        var size = (int)PortalRecoveryLayout.October6.VtableRva + 4096;
+        Check(PortalRecoveryLayout.ValidatePortal(native, identity, image, size, PortalRecoveryLayout.October6));
+        Check(!PortalRecoveryLayout.ValidatePortal(native, identity, image, size, PortalRecoveryLayout.October5));
+    });
+    var profileImage = Allocate(4096);
+    PortalRecoveryLayout.ClientProfile SyntheticProfile(string name, int codeStart, byte seed)
+    {
+        var parts = new List<PortalRecoveryLayout.CodeFingerprint>();
+        for (var i = 0; i < 4; i++)
+        {
+            var code = Enumerable.Range(0, 16).Select(n => (byte)(n + seed + i)).ToArray();
+            Marshal.Copy(code, 0, profileImage + codeStart + i * 32, code.Length);
+            parts.Add(new(codeStart + i * 32, code.Length, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(code))));
+        }
+        return new(new(name, 64), parts);
+    }
+    Test("Client profiles are selected only after all four block hashes match", () =>
+    {
+        var old = SyntheticProfile("old", 0x100, 1); var updated = SyntheticProfile("updated", 0x300, 20);
+        var profiles = new[] { updated, old };
+        Check(PortalRecoveryLayout.IdentifyImage(native, profileImage.ToInt64(), 4096, profiles) == updated.Layout);
+        Marshal.WriteByte(profileImage, updated.Code[3].Rva, 255);
+        Check(PortalRecoveryLayout.IdentifyImage(native, profileImage.ToInt64(), 4096, profiles) == old.Layout);
+    });
+    Test("Mixed old and updated instruction blocks cannot authorize recovery", () =>
+    {
+        var old = SyntheticProfile("old", 0x100, 1); var updated = SyntheticProfile("updated", 0x300, 20);
+        Marshal.WriteByte(profileImage, old.Code[0].Rva, 255);
+        Marshal.WriteByte(profileImage, updated.Code[3].Rva, 255);
+        Check(PortalRecoveryLayout.IdentifyImage(native, profileImage.ToInt64(), 4096, new[] { updated, old }) == null);
+    });
+    Test("Relative profile matching survives image relocation", () =>
+    {
+        var profile = SyntheticProfile("relocated", 0x100, 1); var relocated = Allocate(4096);
+        var copy = new byte[4096]; Marshal.Copy(profileImage, copy, 0, copy.Length); Marshal.Copy(copy, 0, relocated, copy.Length);
+        Check(PortalRecoveryLayout.MatchesProfile(native, relocated.ToInt64(), 4096, profile));
+    });
+    Test("Profile blocks and vtable must remain within the reported image", () =>
+    {
+        var profile = SyntheticProfile("bounds", 0x100, 1);
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 0x100, profile));
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 4096, profile with { Layout = new("outside", 4096) }));
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 4096, profile with { Layout = new("negative", -1) }));
+    });
+    Test("Empty, partial, invalid-length and missing profiles never match", () =>
+    {
+        var profile = SyntheticProfile("invalid", 0x100, 1);
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 4096, profile with { Code = Array.Empty<PortalRecoveryLayout.CodeFingerprint>() }));
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 4096, profile with { Code = profile.Code.Take(3).ToArray() }));
+        var parts = profile.Code.ToArray(); parts[0] = parts[0] with { Length = -1 };
+        Check(!PortalRecoveryLayout.MatchesProfile(native, profileImage.ToInt64(), 4096, profile with { Code = parts }));
+        Check(PortalRecoveryLayout.IdentifyImage(native, profileImage.ToInt64(), 4096, Array.Empty<PortalRecoveryLayout.ClientProfile>()) == null);
+    });
+    Test("Profile selection respects read cancellation and cannot use fabricated zeros", () =>
+    {
+        var profile = SyntheticProfile("budget", 0x100, 1);
+        var budget = new ScanBudget(native, () => true, maxReads: 3, milliseconds: 1000);
+        Check(!PortalRecoveryLayout.MatchesProfile(budget, profileImage.ToInt64(), 4096, profile));
+        Check(budget.ReadsUsed == 3);
     });
     Test("Disposed handle cannot read or write", () =>
     {

@@ -45,3 +45,17 @@ Read-only live verification matched all four code hashes and the current closed 
 A user-supplied Steam diagnostic matches the same instruction profile with recovery enabled, but has ScanComplete=false, 487 awake plus 483 sleeping nodes visited, no portal rows and no writes. This does not show an unsupported client or establish a Windows-version cause. The old collector restarted traversal on every sample and discarded discovered candidates if the subsequent observation pass had no remaining budget.
 
 The v4 collector resumes using the last fully inspected entity key, seeks from the current root each time, alternates map priority, and retains discovered identities before optional diagnostic reads. Partial candidate parsing retries the same key. It keeps the shared 15 ms / 4,000-read budget, with 128 keys per map per sample; crossing 2,000 total nodes no longer prevents eventual completion of a valid tree. Tests cover a 2,503-entity map, budget boundaries, root/head changes, cancellation and cycles. A read-only live sweep completed 132 awake and 97 sleeping entities across five small pages and retained the portal throughout. The friend's manual result remains pending.
+
+
+## Client update inspected on 2026-10-06
+
+The installed executable SHA256 is `7157984534da1b146e9b0be342aa9fd24272915b6f478aadef9830fc7873f89f`.
+The live export reports complete discovery and one valid resident closed portal, but the old profile is unsupported. Named diagnostic flags still identify target 0x69, hidden 0x73, quest 0x6E and item 0x6F.
+
+- Targetable vtable: RVA `0x33A7338`; slot 0 deleting destructor `0x1729B10`, calls destructor `0x1729B50`.
+- Debug method, slot 13: `0x172B700`; the named target print loads byte 0x69 at `0x172B74D`.
+- Highlight update: `0x1729820`; tests byte 0x6A at `0x172982A`, returns when zero, then performs the render-color/outline update. Targetable's on-load method calls it at `0x172A036`.
+- Target predicate: `0x172B940`; tests target 0x69 and the same visibility/requirement flags.
+- Container cleanup: `0x1729EBE` takes this+0x50; `0x1729EC2` calls `0x140D80`. Legacy pointer fields remain forbidden.
+
+A new explicit profile verifies all four instruction-block hashes. The October 5 profile remains available; matching blocks from different profiles cannot be combined. The selected profile's vtable is used for every portal identity validation and its name is exported. The new profile and current portal passed a live read-only check. No game-memory writes or clicks were performed during patch validation. Visual recovery/re-entry on the updated client await the user's test.

@@ -343,7 +343,7 @@ namespace PortalAccess
                         Area = this.areaKey, this.Settings.RestoreInteraction,
                         Mode = this.Settings.RestoreInteraction ? "verified-two-flag-recovery" : "read-only",
                         WritesBlocked = !this.Settings.RestoreInteraction || !this.memory.RecoveryLayoutVerified,
-                        RecoveryProfile = this.memory.RecoveryLayoutVerified ? PortalRecoveryLayout.Profile : null,
+                        RecoveryProfile = this.memory.RecoveryLayout?.Name,
                         FlagOffsetsVerified = this.observations.Count > 0 && this.observations.All(x => x.VerifiedFlags != null),
                         FlagVerification = "client-debug-labels-read-only", RecoveryVerified = false,
                         ModifiedFields = this.modifiedFields, FailedAttempts = this.failedAttempts, LastUndo = this.lastUndo,

@@ -16,7 +16,8 @@ namespace PortalAccess
     {
         private SafeProcessHandle? handle;
         private SafeProcessHandle? recoveryHandle;
-        private bool? recoveryLayout;
+        private bool recoveryLayoutChecked;
+        private PortalRecoveryLayout.VerifiedLayout? recoveryLayout;
         private uint attachedPid;
         private bool writable;
         public string Session { get; private set; } = string.Empty;
@@ -102,14 +103,28 @@ namespace PortalAccess
             return success;
         }
 
-        internal bool RecoveryLayoutVerified => this.recoveryLayout ??=
-            PortalRecoveryLayout.MatchesImage(this, this.ImageStart, this.ImageSize);
+        internal PortalRecoveryLayout.VerifiedLayout? RecoveryLayout
+        {
+            get
+            {
+                if (!this.recoveryLayoutChecked)
+                {
+                    this.recoveryLayout = PortalRecoveryLayout.IdentifyImage(this, this.ImageStart, this.ImageSize);
+                    this.recoveryLayoutChecked = true;
+                }
+                return this.recoveryLayout;
+            }
+        }
+
+        internal bool RecoveryLayoutVerified => this.RecoveryLayout != null;
 
         internal IByteMemory? CreateRecoveryWriter(PortalIdentity portal, Func<bool> areaCurrent)
         {
+            var layout = this.RecoveryLayout;
+            if (layout == null) return null;
             var session = this.Session;
-            bool Validate() => this.Session == session && this.IsAlive() && areaCurrent() && this.RecoveryLayoutVerified &&
-                PortalRecoveryLayout.ValidatePortal(this, portal, this.ImageStart, this.ImageSize) &&
+            bool Validate() => this.Session == session && this.IsAlive() && areaCurrent() && this.RecoveryLayout == layout &&
+                PortalRecoveryLayout.ValidatePortal(this, portal, this.ImageStart, this.ImageSize, layout) &&
                 this.Session == session && this.IsAlive() && areaCurrent();
             if (!Validate()) return null;
             if (this.recoveryHandle is not { IsInvalid: false, IsClosed: false })
@@ -174,6 +189,7 @@ namespace PortalAccess
             this.recoveryHandle?.Dispose();
             this.recoveryHandle = null;
             this.recoveryLayout = null;
+            this.recoveryLayoutChecked = false;
             this.attachedPid = 0;
             this.handle?.Dispose();
             this.handle = null;
