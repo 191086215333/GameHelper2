@@ -59,3 +59,21 @@ The live export reports complete discovery and one valid resident closed portal,
 - Container cleanup: `0x1729EBE` takes this+0x50; `0x1729EC2` calls `0x140D80`. Legacy pointer fields remain forbidden.
 
 A new explicit profile verifies all four instruction-block hashes. The October 5 profile remains available; matching blocks from different profiles cannot be combined. The selected profile's vtable is used for every portal identity validation and its name is exported. The new profile and current portal passed a live read-only check. No game-memory writes or clicks were performed during patch validation. Visual recovery/re-entry on the updated client await the user's test.
+
+## Client update inspected on 2026-10-10
+
+The installed executable SHA256 is `984e7bb2b503aef5fe26ac0cc4004eaae079396fb081cbe3bc39d945f190f117`.
+The helper's diagnostic retained a valid closed portal with target 0, hidden 0 and satisfied quest/item flags, but reported an unsupported profile and no writes. A subsequent read-only live sample confirmed Targetable vtable RVA `0x33A7308`. Area changes during inspection invalidated earlier entity addresses; those were not reused.
+
+The deleting destructor, debug method, highlight update, target predicate and vector-cleanup call site retain the October 6 RVAs. The debug method still identifies target `0x69`, hidden `0x73`, quest `0x6E` and item `0x6F` by name. The highlight method still tests `0x6A` at `0x172982A` before its render-color/outline update; the vector at `0x50` remains separate and must not be modified.
+
+The new profile verifies these complete instruction blocks:
+
+| RVA | Bytes | SHA256 |
+| --- | --- | --- |
+| `0x1729820` | 608 | `386623ad54cab674b53a898488de78c050484c5a7a88abfb9c23e9fb0a740082` |
+| `0x172B700` | 240 | `20a12baf44b5bbbc1de7dabe6e76381457f883c667feea1aa3569e334fb6c278` |
+| `0x172B940` | 80 | `65f64da3af977255ce016b950a36b889c211023be529e512d3742d6b258fdcfb` |
+| `0x1729EBE` | 9 | `a497dc80926369a87e18abca88fde4fab76758fe7114de45ef0025081d2c893b` |
+
+Both earlier profiles remain supported. The vtable regression test now checks every matching and mismatched pair across all three profiles. The whole solution build and 68 offline tests pass. Read-only inspection of the running client selects `poe2-2026-10-10-targetable-69-6a`; the post-build sample was in another area with no portal discovered, so closed-portal identity and recovery were not revalidated there. No game-memory writes or clicks were performed during patch validation; visual recovery and re-entry still require the user's test.

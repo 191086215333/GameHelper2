@@ -19,8 +19,16 @@ namespace PortalAccess
 
         internal static readonly VerifiedLayout October5 = new("poe2-2026-10-05-targetable-69-6a", 0x33A6028);
         internal static readonly VerifiedLayout October6 = new("poe2-2026-10-06-targetable-69-6a", 0x33A7338);
+        internal static readonly VerifiedLayout October10 = new("poe2-2026-10-10-targetable-69-6a", 0x33A7308);
         private static readonly ClientProfile[] KnownProfiles =
         {
+            new(October10, new CodeFingerprint[]
+            {
+                new(0x1729820, 608, "386623AD54CAB674B53A898488DE78C050484C5A7A88ABFB9C23E9FB0A740082"),
+                new(0x172B700, 240, "20A12BAF44B5BBBC1DE7DABE6E76381457F883C667FEEA1AA3569E334FB6C278"),
+                new(0x172B940, 80, "65F64DA3AF977255CE016B950A36B889C211023BE529E512D3742D6B258FDCFB"),
+                new(0x1729EBE, 9, "A497DC80926369A87E18ABCA88FDE4FAB76758FE7114DE45EF0025081D2C893B"),
+            }),
             new(October6, new CodeFingerprint[]
             {
                 new(0x1729820, 608, "DF314CD23EC4AABD6C1872A55655CE882621EA2F9162B8D218F5026EA7548639"),

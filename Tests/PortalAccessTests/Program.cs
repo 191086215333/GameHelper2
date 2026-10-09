@@ -548,10 +548,14 @@ try
     Test("Portal validation uses the vtable belonging to the selected client profile", () =>
     {
         RecoveryPortal();
-        var image = debugImage.ToInt64() - PortalRecoveryLayout.October6.VtableRva;
-        var size = (int)PortalRecoveryLayout.October6.VtableRva + 4096;
-        Check(PortalRecoveryLayout.ValidatePortal(native, identity, image, size, PortalRecoveryLayout.October6));
-        Check(!PortalRecoveryLayout.ValidatePortal(native, identity, image, size, PortalRecoveryLayout.October5));
+        var layouts = new[] { PortalRecoveryLayout.October5, PortalRecoveryLayout.October6, PortalRecoveryLayout.October10 };
+        foreach (var selected in layouts)
+        {
+            var image = debugImage.ToInt64() - selected.VtableRva;
+            var size = (int)selected.VtableRva + 4096;
+            foreach (var candidate in layouts)
+                Check(PortalRecoveryLayout.ValidatePortal(native, identity, image, size, candidate) == (candidate == selected));
+        }
     });
     var profileImage = Allocate(4096);
     PortalRecoveryLayout.ClientProfile SyntheticProfile(string name, int codeStart, byte seed)
